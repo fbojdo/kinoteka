@@ -35,24 +35,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Przeglądarka do odczytu profilu Filmwebu
-        run: |
-          pip install playwright==1.48.0
-          python -m playwright install --with-deps chromium
-
-      - name: Odczytaj oceny z profilu Filmwebu
-        timeout-minutes: 25
-        env:
-          FILMWEB_USER: ${{ vars.FILMWEB_USER || 'Bojryk' }}
-        run: |
-          mkdir -p state && rm -f state/filmweb_raw.json
-          python scripts/filmweb_scrape.py || true
-
       - name: Pobierz dane (Filmweb, TMDB, IMDb, OMDb, Wikidata)
         env:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           OMDB_KEY: ${{ secrets.OMDB_KEY }}
           FILMWEB_USER: ${{ vars.FILMWEB_USER || 'Bojryk' }}
+          FILMWEB_USER_ID: ${{ vars.FILMWEB_USER_ID || '2570815' }}
         run: python scripts/update_data.py
 
       - name: Zapisz stan

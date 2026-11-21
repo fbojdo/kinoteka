@@ -24,6 +24,7 @@ STATE_PATH = os.path.join(ROOT, "state", "state.json.gz")
 TMDB_KEY = os.environ.get("TMDB_KEY", "").strip()
 OMDB_KEY = os.environ.get("OMDB_KEY", "").strip()
 FW_USER = os.environ.get("FILMWEB_USER", "Bojryk").strip()
+FW_USER_ID = os.environ.get("FILMWEB_USER_ID", "2570815").strip()   # numer konta Filmweb (Bojryk)
 MIN_VOTES_MOVIE = int(os.environ.get("MIN_VOTES_MOVIE", "700"))
 MIN_VOTES_TV = int(os.environ.get("MIN_VOTES_TV", "250"))
 OMDB_DAILY = int(os.environ.get("OMDB_DAILY", "950"))
@@ -109,18 +110,22 @@ FW_H = {"x-locale": "pl_PL"}
 def fw_get(path):
     return http_json(FW + path, FW_H, min_interval=0.25)
 
-def fw_list(kind, typ):
-    """kind: votes | want2see; typ: film | serial"""
-    out, page = [], 1
-    while page < 200:
-        res = fw_get(f"/user/{urllib.parse.quote(FW_USER)}/{kind}/{typ}?page={page}")
-        if not res:
+def fw_user_list(kind, typ):
+    """kind: votes | want2see; zwraca [(filmwebId, timestamp)] – pierwsza strona bez parametru page."""
+    out, seen, page = [], set(), 1
+    key = "votes" if kind == "votes" else "want2Sees"
+    while page < 100:
+        res = fw_get(f"/users/{FW_USER_ID}/{kind}/{typ}" + ("" if page == 1 else f"?page={page}"))
+        items = (res or {}).get(key) or []
+        new = 0
+        for it in items:
+            fid = (it.get("id") or {}).get("id") if isinstance(it.get("id"), dict) else it.get("id") or it.get("entity")
+            if isinstance(fid, int) and fid not in seen:
+                seen.add(fid); new += 1
+                out.append((fid, it.get("timestamp")))
+        total = (res or {}).get("totalCount") or 0
+        if not new or len(out) >= total:
             break
-        if isinstance(res, dict):
-            res = res.get("items") or res.get("data") or []
-        if not res:
-            break
-        out.extend(res)
         page += 1
     return out
 
@@ -333,57 +338,6 @@ def omdb(imdb):
     return res
 
 # ---------------------------------------------------------------- main
-def _walk(o):
-    if isinstance(o, dict):
-        yield o
-        for v in o.values():
-            yield from _walk(v)
-    elif isinstance(o, list):
-        for v in o:
-            yield from _walk(v)
-
-def parse_filmweb_raw(raw):
-    """Łączy dane przechwycone z API strony i z DOM. Zwraca ({ratings, want}, {fid: info})."""
-    out = {"ratings": {}, "want": {}}
-    titles = {}
-    for kind, bucket in (("votes", "ratings"), ("want", "want")):
-        for typ in ("film", "serial"):
-            is_tv = typ == "serial"
-            for cap in (raw.get(kind) or {}).get(typ, []):
-                u = cap.get("url", "").lower()
-                if kind == "votes" and "vote" not in u:
-                    continue
-                if kind == "want" and "want" not in u:
-                    continue
-                for d in _walk(cap.get("data")):
-                    fid = d.get("entity") or d.get("filmId") or d.get("titleId") or (d.get("id") if "rate" in d else None)
-                    if not isinstance(fid, int) or fid < 10:
-                        continue
-                    rec = out[bucket].setdefault(str(fid), {"fw": str(fid), "tv": is_tv})
-                    if bucket == "ratings" and isinstance(d.get("rate"), (int, float)) and 1 <= d["rate"] <= 10:
-                        rec["r"] = int(d["rate"])
-                    dt = entry_date(d)
-                    if dt:
-                        rec["date"] = dt
-                    if d.get("favorite") or d.get("favourite"):
-                        rec["fav"] = True
-            for it in (raw.get("dom") or {}).get(f"{kind}/{typ}", []):
-                fid = str(it.get("entity") or "")
-                if not fid:
-                    continue
-                if it.get("title") or it.get("year"):
-                    titles[fid] = {"pl": it.get("title"), "y": it.get("year"), "tv": it.get("type") == "serial"}
-                if it.get("link") and kind == "votes":
-                    continue  # w ocenach link do tytułu służy tylko jako źródło tytułu/roku
-                rec = out[bucket].setdefault(fid, {"fw": fid, "tv": it.get("type") == "serial" or is_tv})
-                if bucket == "ratings" and it.get("rate") and "r" not in rec:
-                    rec["r"] = int(it["rate"])
-                if it.get("date") and "date" not in rec:
-                    rec["date"] = str(it["date"])[:10]
-    ratings = [r for r in out["ratings"].values() if r.get("r")]
-    want = [w for w in out["want"].values() if w["fw"] not in out["ratings"]]
-    return {"ratings": ratings, "want": want}, titles
-
 def entry_fw_id(e):
     return str(e.get("entity") or e.get("id") or e.get("filmId") or e.get("film") or "")
 
@@ -419,23 +373,41 @@ def main():
     STATUS["tmdb_key_kind"] = "bearer" if TMDB_KEY.startswith("eyJ") else "api_key"
     STATUS["tmdb_key_len"] = len(TMDB_KEY)
 
-    # 1. Filmweb – Twoje listy (przechwycone z profilu przez scripts/filmweb_scrape.py)
+    # 1. Filmweb – Twoje listy (publiczne API profilu)
     me = {"user": FW_USER, "ratings": [], "want": []}
-    raw_path = os.path.join(ROOT, "state", "filmweb_raw.json")
-    raw = json.load(open(raw_path, encoding="utf-8")) if os.path.exists(raw_path) else {}
-    lists, fw_titles = parse_filmweb_raw(raw)
-    me["ratings"], me["want"] = lists["ratings"], lists["want"]
-    for fid, inf in fw_titles.items():
-        fwinfo.setdefault(fid, {}).update({k: v for k, v in inf.items() if v})
-    STATUS["filmweb"] = {"api_urls": raw.get("api_urls", [])[:40], "error": raw.get("error"),
-                         "dom_counts": {k: len(v) for k, v in (raw.get("dom") or {}).items()},
-                         "api_counts": {f"{k}/{t}": len(v) for k in ("votes", "want") for t, v in (raw.get(k) or {}).items()},
-                         "ratings": len(me["ratings"]), "want": len(me["want"]),
-                         "sample": json.dumps(((raw.get("votes") or {}).get("film") or [None])[:1], ensure_ascii=False)[:1500],
-                         "dom_sample": (raw.get("dom") or {}).get("votes/film", [])[:5]}
-    log(f"Filmweb: ocen {len(me['ratings'])}, chcę zobaczyć {len(me['want'])}")
+    votes_cache = st.setdefault("fwvotes", {})   # "typ:id" -> {r, date, ts}
+    fw_counts = {}
+    for typ in ("film", "serial"):
+        lst = fw_user_list("votes", typ)
+        fw_counts["votes/" + typ] = len(lst)
+        def get_vote(it, typ=typ):
+            fid, ts = it[0], it[1]
+            key = f"{typ}:{fid}"
+            c = votes_cache.get(key)
+            if c and c.get("ts") == ts and c.get("r"):
+                return key, c
+            v = fw_get(f"/users/{FW_USER_ID}/votes/{typ}/{fid}") or {}
+            d = entry_date(v) or entry_date({"timestamp": ts})
+            return key, {"r": v.get("rate"), "date": d, "ts": ts, "fav": bool(v.get("favorite") or v.get("favourite"))}
+        for key, v in pmap(get_vote, lst, 4):
+            votes_cache[key] = v
+            if v.get("r"):
+                rec = {"fw": key.split(":")[1], "tv": typ == "serial", "r": int(v["r"]), "date": v.get("date")}
+                if v.get("fav"):
+                    rec["fav"] = True
+                me["ratings"].append(rec)
+    rated = {r["fw"] for r in me["ratings"]}
+    for typ in ("film", "serial"):
+        lst = fw_user_list("want2see", typ)
+        fw_counts["want/" + typ] = len(lst)
+        for fid, ts in lst:
+            if str(fid) not in rated:
+                me["want"].append({"fw": str(fid), "tv": typ == "serial", "date": entry_date({"timestamp": ts})})
+    STATUS["filmweb"] = {"user_id": FW_USER_ID, "counts": fw_counts, "ratings": len(me["ratings"]), "want": len(me["want"])}
+    log(f"Filmweb: ocen {len(me['ratings'])}, chcę zobaczyć {len(me['want'])}  {fw_counts}")
     if not me["ratings"] and st.get("me", {}).get("ratings"):
         log("UWAGA: Filmweb nic nie zwrócił – zostawiam poprzednie oceny.")
+        STATUS["notes"].append("Filmweb nie zwrócił ocen – użyto poprzednich.")
         me = st["me"]
 
     # 2. Mapowanie Filmweb -> TMDB
