@@ -31,6 +31,12 @@ OMDB_DAILY = int(os.environ.get("OMDB_DAILY", "950"))
 FW_RATING_DAILY = int(os.environ.get("FW_RATING_DAILY", "4000"))
 TMDB_REFRESH_DAYS = 7
 NOW = int(time.time())
+START = time.time()
+BUDGET_MIN = float(os.environ.get("TIME_BUDGET_MIN", "70"))   # cały skrypt; reszta czeka na kolejną noc
+
+def time_left():
+    """Minuty pozostałe z budżetu czasu."""
+    return BUDGET_MIN - (time.time() - START) / 60
 UA = "Mozilla/5.0 (Kinoteka personal app; github.com/fbojdo/kinoteka)"
 
 def log(*a):
@@ -46,7 +52,7 @@ def _err(host, code, url):
     h[str(code)] = h.get(str(code), 0) + 1
     h.setdefault("last_" + str(code), re.sub(r"(api_key|apikey)=[^&]+", r"\1=***", url)[:160])
 
-def http_json(url, headers=None, min_interval=0.0, retries=4, data=None):
+def http_json(url, headers=None, min_interval=0.0, retries=4, data=None, timeout=30):
     host = urllib.parse.urlparse(url).netloc
     h = {"User-Agent": UA, "Accept": "application/json"}
     if headers:
@@ -60,7 +66,7 @@ def http_json(url, headers=None, min_interval=0.0, retries=4, data=None):
                 _last[host] = time.time()
         try:
             req = urllib.request.Request(url, headers=h, data=data)
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read()
                 if r.headers.get("Content-Encoding") == "gzip":
                     raw = gzip.decompress(raw)
@@ -108,7 +114,7 @@ FW = "https://www.filmweb.pl/api/v1"
 FW_H = {"x-locale": "pl_PL"}
 
 def fw_get(path):
-    return http_json(FW + path, FW_H, min_interval=0.25)
+    return http_json(FW + path, FW_H, min_interval=0.12, retries=2, timeout=20)
 
 def fw_user_list(kind, typ):
     """kind: votes | want2see; zwraca [(filmwebId, timestamp)] – pierwsza strona bez parametru page."""
@@ -271,8 +277,11 @@ AWARD_RULES = [  # (kod, regex po angielskiej nazwie nagrody)
 def wd_query(q):
     data = urllib.parse.urlencode({"query": q, "format": "json"}).encode()
     r = http_json(WD, {"Accept": "application/sparql-results+json",
-                       "Content-Type": "application/x-www-form-urlencoded"}, min_interval=1.0, data=data)
-    return (r or {}).get("results", {}).get("bindings", [])
+                       "Content-Type": "application/x-www-form-urlencoded"}, min_interval=1.0, data=data,
+                  retries=2, timeout=55)
+    if r is None:
+        return None   # błąd/timeout – nie oznaczaj tytułów jako sprawdzonych
+    return r.get("results", {}).get("bindings", [])
 
 def classify_award(label):
     for code, rx in AWARD_RULES:
@@ -284,8 +293,11 @@ def wikidata_enrich(imdb_ids):
     """Zwraca {imdb: {"fw": filmwebId, "win": [...], "nom": [...], "wl": [etykiety wygranych]}}"""
     out = {}
     ids = sorted(set(i for i in imdb_ids if i))
-    for i in range(0, len(ids), 250):
-        chunk = ids[i:i + 250]
+    for i in range(0, len(ids), 120):
+        if time_left() < 12:
+            log("Wikidata: koniec budżetu czasu – reszta w kolejnym przebiegu")
+            break
+        chunk = ids[i:i + 120]
         vals = " ".join('"%s"' % x for x in chunk)
         q = f"""SELECT ?imdb ?fw ?rel ?awLabel WHERE {{
   VALUES ?imdb {{ {vals} }}
@@ -294,7 +306,10 @@ def wikidata_enrich(imdb_ids):
   OPTIONAL {{ {{ ?item wdt:P166 ?aw . BIND("w" AS ?rel) }} UNION {{ ?item wdt:P1411 ?aw . BIND("n" AS ?rel) }}
              ?aw rdfs:label ?awLabel . FILTER(LANG(?awLabel) = "en") }}
 }}"""
-        for b in wd_query(q):
+        bindings = wd_query(q)
+        if bindings is None:
+            continue
+        for b in bindings:
             im = b["imdb"]["value"]
             e = out.setdefault(im, {"fw": None, "win": set(), "nom": set(), "wl": set()})
             if "fw" in b:
@@ -305,7 +320,9 @@ def wikidata_enrich(imdb_ids):
                     (e["win"] if b["rel"]["value"] == "w" else e["nom"]).add(code)
                     if b["rel"]["value"] == "w" and code in ("oscar", "cannes", "venice", "berlin", "globe", "emmy", "bafta"):
                         e["wl"].add(b["awLabel"]["value"])
-        if i % 2500 == 0:
+        for x in chunk:
+            out.setdefault(x, {"fw": None, "win": set(), "nom": set(), "wl": set()})
+        if i % 1200 == 0:
             log(f"Wikidata: {i + len(chunk)}/{len(ids)}")
     for e in out.values():
         e["nom"] -= e["win"]
@@ -318,7 +335,7 @@ def wikidata_imdb_for_filmweb(fw_ids):
     for i in range(0, len(ids), 300):
         vals = " ".join('"%s"' % x for x in ids[i:i + 300])
         q = f"SELECT ?fw ?imdb WHERE {{ VALUES ?fw {{ {vals} }} ?item wdt:P5032 ?fw ; wdt:P345 ?imdb . }}"
-        for b in wd_query(q):
+        for b in wd_query(q) or []:
             out[b["fw"]["value"]] = b["imdb"]["value"]
     return out
 
@@ -453,28 +470,38 @@ def main():
     todo.sort(key=lambda k: titles.get(k, {}).get("_ts", 0))
     log("TMDB szczegóły do pobrania:", len(todo))
     for i in range(0, len(todo), 500):
+        if time_left() < 25:
+            log("TMDB: koniec budżetu czasu – reszta w kolejnym przebiegu")
+            break
         for d in pmap(tmdb_details, todo[i:i + 500], 12):
             if d:
                 titles[d["id"]] = d
         log(f"  {min(i + 500, len(todo))}/{len(todo)}")
         if i % 3000 == 0:
             save_state(st)
+    save_state(st)
 
-    # 4. Wikidata (nagrody + id Filmwebu) – dla nowych i co 30 dni
+    # 4. IMDb (szybkie i najważniejsze – przed wolniejszymi źródłami)
     imdbs = [titles[k]["imdb"] for k in keys if k in titles and titles[k].get("imdb")]
+    imdb = imdb_ratings()
+    if imdb:
+        st["imdb"] = {k: v for k, v in imdb.items() if k in set(imdbs)}
+    imdb = st.get("imdb", {})
+
+    # 5. Wikidata (nagrody + id Filmwebu) – dla nowych i co 30 dni
     stale = [i for i in imdbs if i not in wd or NOW - wd[i].get("_ts", 0) > 30 * 86400]
     log("Wikidata do odświeżenia:", len(stale))
     res = wikidata_enrich(stale)
-    for i in stale:
-        e = res.get(i, {"fw": None, "win": [], "nom": [], "wl": []})
+    for i, e in res.items():   # tylko faktycznie sprawdzone
         e["_ts"] = NOW
         wd[i] = e
+    save_state(st)
     for fid, k in fwmap.items():  # z mapowania Twoich ocen też znamy id Filmwebu
         im = titles.get(k, {}).get("imdb")
         if im and im in wd and not wd[im].get("fw"):
             wd[im]["fw"] = fid
 
-    # 5. Oceny Filmwebu dla katalogu
+    # 6. Oceny Filmwebu dla katalogu
     fw_ids = {}
     for k in keys:
         t = titles.get(k)
@@ -489,23 +516,21 @@ def main():
     def get_fwr(f):
         r = fw_rating(f)
         return f, ({"r": round(r.get("rate", 0), 1), "n": r.get("count", 0), "_ts": NOW} if r else {"_ts": NOW})
-    for f, v in pmap(get_fwr, fw_todo, 3):
-        fwr[f] = v
+    for i in range(0, len(fw_todo), 300):
+        if time_left() < 8:
+            log("Filmweb: koniec budżetu czasu – reszta w kolejnym przebiegu")
+            break
+        for f, v in pmap(get_fwr, fw_todo[i:i + 300], 4):
+            fwr[f] = v
 
-    # 6. OMDb (RT, Metacritic) – limit dzienny
-    if OMDB_KEY:
+    # 7. OMDb (RT, Metacritic) – limit dzienny
+    if OMDB_KEY and time_left() > 4:
         cand = sorted({titles[k]["imdb"] for k in keys if k in titles and titles[k].get("imdb")},
                       key=lambda i: (i in om, om.get(i, {}).get("_ts", 0)))
         cand = [i for i in cand if i not in om or NOW - om[i]["_ts"] > 60 * 86400][:OMDB_DAILY]
         log("OMDb do pobrania:", len(cand))
         for i, v in zip(cand, pmap(omdb, cand, 4)):
             om[i] = v
-
-    # 7. IMDb
-    imdb = imdb_ratings()
-    if imdb:
-        st["imdb"] = {k: v for k, v in imdb.items() if k in set(imdbs)}
-    imdb = st.get("imdb", {})
 
     # 8. Zapis danych dla aplikacji
     catalog, overviews = [], {}
@@ -545,6 +570,10 @@ def main():
     write_json("me.json", me)
     write_json("meta.json", meta)
     STATUS["catalog"] = len(catalog)
+    STATUS["minutes"] = round((time.time() - START) / 60, 1)
+    STATUS["coverage"] = {"imdb": sum(1 for o in catalog if o.get("ir")), "filmweb": sum(1 for o in catalog if o.get("fr")),
+                          "rt": sum(1 for o in catalog if o.get("rt") is not None), "awards_checked": len(wd),
+                          "providers": sum(1 for o in catalog if o.get("pv"))}
     STATUS["updated"] = meta["updated"]
     write_json("status.json", STATUS)
     for s, v in overviews.items():

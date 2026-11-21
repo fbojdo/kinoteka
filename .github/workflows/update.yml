@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -36,11 +36,14 @@ jobs:
           python-version: "3.12"
 
       - name: Pobierz dane (Filmweb, TMDB, IMDb, OMDb, Wikidata)
+        timeout-minutes: 95
+        continue-on-error: true
         env:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           OMDB_KEY: ${{ secrets.OMDB_KEY }}
           FILMWEB_USER: ${{ vars.FILMWEB_USER || 'Bojryk' }}
           FILMWEB_USER_ID: ${{ vars.FILMWEB_USER_ID || '2570815' }}
+          TIME_BUDGET_MIN: "70"
         run: python scripts/update_data.py
 
       - name: Zapisz stan
@@ -52,6 +55,7 @@ jobs:
 
       - name: Złóż stronę
         run: |
+          test -s data/catalog.json || { echo "Brak danych – nie publikuję pustej strony"; exit 1; }
           mkdir -p _site
           cp -r index.html app.js style.css sw.js manifest.webmanifest icons data _site/
           sed -i "s/__BUILD__/${GITHUB_RUN_ID}/" _site/sw.js _site/index.html
@@ -63,6 +67,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
