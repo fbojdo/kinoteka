@@ -22,7 +22,7 @@ const S = {
   f: null,
 };
 const DEFAULT_F = () => ({
-  type: 'all', genres: [], regions: [], yFrom: 1920, yTo: 2030, rtMax: 0, provs: [], onlySubs: false, awards: [], awardMode: 'win',
+  type: 'all', mood: 'any', period: 'any', lenB: 'any', themes: [], sure: false, mini: false, genres: [], regions: [], yFrom: 1920, yTo: 2030, rtMax: 0, provs: [], onlySubs: false, awards: [], awardMode: 'win',
   minFw: 0, minImdb: 0, minRt: 0, minMc: 0, minVotes: 0, country: '', hideSeen: true, sort: 'match'
 });
 
@@ -630,11 +630,45 @@ function viewProfile() {
   <table class="mini">${P.below.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="bad">Ty ${x.r}</td></tr>`).join('')}</table>`;
 }
 
+/* ================================================================== NASTRÓJ: lekko ↔ ciężko */
+const G_LIGHT = { 35: 1, 10751: 1, 16: .8, 10402: .7, 10749: .5, 12: .5, 14: .3, 10762: 1, 10759: .3, 10765: .2, 28: .2 };
+const G_HEAVY = { 10752: 1, 18: .6, 36: .6, 80: .45, 53: .5, 27: .4, 99: .35, 9648: .3, 10768: .8 };
+const H_HEAVY = { war: 1, psyche: .7, society: .6, faith: .4, truth: .4, politics: .5, law: .3, medicine: .4, crime: .3, history: .3 };
+const H_LIGHT = { love: .5, satire: .3, sport: .3, adventure: .3, art: .2, youth: .2 };
+function heaviness(t) {   // ~ -1 (lekko) … +1 (ciężko)
+  if (t._hv != null) return t._hv;
+  let l = 0, h = 0;
+  for (const g of t.g || []) { l += G_LIGHT[g] || 0; h += G_HEAVY[g] || 0; }
+  for (const f of feats(t)) if (f[0] === 'h') { l += H_LIGHT[f.slice(1)] || 0; h += (H_HEAVY[f.slice(1)] || 0) * .6; }
+  t._hv = Math.max(-1, Math.min(1, (h - l) / 1.6));
+  return t._hv;
+}
+const PERIODS = { any: ['Dowolnie'], new: ['Nowości'], y5: ['Ostatnie 5 lat'], y2000: ['Od 2000'], y90: ['Lata 80–90.'], classic: ['Klasyka (do 1979)'] };
+function inPeriod(t, p) {
+  const y = t.y || 0, now = new Date().getFullYear();
+  return p === 'any' || (p === 'new' && y >= now - 1) || (p === 'y5' && y >= now - 5) || (p === 'y2000' && y >= 2000) || (p === 'y90' && y >= 1980 && y < 2000) || (p === 'classic' && y && y < 1980);
+}
+const LENB = { any: 'Dowolnie', short: 'Krótko', mid: 'Średnio', long: 'Długo' };
+function inLen(t, b) {
+  if (b === 'any' || !t.len) return b === 'any';
+  const tv = typ(t) === 't', L = t.len;
+  if (b === 'short') return tv ? L <= 30 : L <= 100;
+  if (b === 'mid') return tv ? L > 30 && L <= 55 : L > 100 && L <= 130;
+  return tv ? L > 55 : L > 130;
+}
+function isSure(t) { const p = S.preds.get(t.id) || 0, u = (S.unc && S.unc.get(t.id)) || 9; return p - .5 * u >= 7.6; }
+
 /* ================================================================== FILTRY */
 function passes(t, f, ignoreSeen) {
   if (f.type === 'movie' && t.id[0] !== 'm') return false;
   if (f.type === 'tv' && t.id[0] !== 't') return false;
   if (f.genres.length && !f.genres.every(g => (t.g || []).includes(+g))) return false;
+  if (f.mood && f.mood !== 'any') { const hv = heaviness(t); if (f.mood === 'light' && hv > -.15) return false; if (f.mood === 'heavy' && hv < .25) return false; if (f.mood === 'mid' && (hv < -.35 || hv > .45)) return false; }
+  if (f.period && f.period !== 'any' && !inPeriod(t, f.period)) return false;
+  if (f.lenB && f.lenB !== 'any' && !inLen(t, f.lenB)) return false;
+  if (f.themes && f.themes.length) { const fs = feats(t); if (!f.themes.some(h => fs.includes('h' + h))) return false; }
+  if (f.mini && !(typ(t) === 't' && (t.seasons || 0) <= 1)) return false;
+  if (f.sure && !isSure(t)) return false;
   if (t.y && (t.y < f.yFrom || t.y > f.yTo)) return false;
   if (!t.y && (f.yFrom > 1920 || f.yTo < 2030)) return false;
   if (f.rtMax && t.len && t.len > f.rtMax) return false;
@@ -703,10 +737,11 @@ function renderChips() {
   const f = S.f;
   const chips = [
     ['type:all', 'Wszystko', f.type === 'all'], ['type:movie', 'Filmy', f.type === 'movie'], ['type:tv', 'Seriale', f.type === 'tv'],
+    ['mood:light', '☀︎ Lekko', f.mood === 'light'], ['mood:heavy', '◐ Na poważnie', f.mood === 'heavy'],
+    ['period:new', 'Nowości', f.period === 'new'], ['sure', '★ Pewniaki', f.sure], ['len:short', 'Krótko', f.lenB === 'short'],
   ];
   if (S.local.subs.length) chips.push(['subs', 'Moje serwisy', f.onlySubs]);
-  chips.push(['eu', 'Europejskie', (f.regions || []).includes('eu')], ['aw:oscar', 'Oscary', f.awards.includes('oscar')], ['pl', 'Polskie', f.country === 'PL'],
-    ['new', 'Ostatnie 3 lata', f.yFrom >= new Date().getFullYear() - 3]);
+  chips.push(['eu', 'Europejskie', (f.regions || []).includes('eu')], ['pl', 'Polskie', f.country === 'PL'], ['aw:oscar', 'Oscary', f.awards.includes('oscar')]);
   el.innerHTML = chips.map(([k, l, on]) => `<button class="chip${on ? ' on' : ''}" data-chip="${k}">${l}</button>`).join('');
 }
 
@@ -766,7 +801,7 @@ function viewRec() {
   }
   let items = S.cat.filter(t => passes(t, S.f) && !S.myRatings.has(t.id) && !S.local.hidden[t.id]);
   items = S.f.sort === 'match' ? rankRecs(items) : items.sort(sortFn(S.f.sort));
-  if (!items.length) { v.innerHTML = `<div class="empty">Nic nie pasuje do filtrów.</div>`; return; }
+  if (!items.length) { v.innerHTML = `<div class="empty">Nic nie pasuje do tych filtrów.<br><br><button class="btn" data-reset-quick>Wyczyść filtry</button></div>`; return; }
   const filtered = activeFilterCount() > 0 || S.f.sort !== 'match';
   let html = '';
   if (!filtered) {
@@ -785,7 +820,9 @@ function viewRec() {
     html += shelf('Nowości', pick(items.filter(t => t.y >= new Date().getFullYear() - 1), 12));
     html += `<div class="section-h">Wszystkie rekomendacje</div>`;
   } else {
-    html += `<div class="note">${items.length.toLocaleString('pl')} tytułów pasuje do filtrów</div>`;
+    const top = items.find(t => t.p || t.bd);
+    if (top && S.f.sort === 'match') html += hero(top).replace('Na dziś dla Ciebie', 'Najlepsze dopasowanie');
+    html += `<div class="note">${items.length.toLocaleString('pl')} tytułów pasuje · <button class="linkbtn" data-reset-quick>wyczyść filtry</button></div>`;
   }
   v.innerHTML = html + list(items, 'rec');
 }
@@ -899,7 +936,7 @@ async function openDetail(id) {
   <div class="d-head${t.bd ? ' over' : ''}"><div class="poster big" ${t.p ? `style="background-image:url('${IMG}w342${t.p}')"` : ''}></div>
     <div><h2>${esc(t.t)}</h2>${t.ot ? `<div class="d-ot">${esc(t.ot)}</div>` : ''}
     <div class="d-meta">${[t.id[0] === 't' ? 'Serial' + (t.seasons ? `, ${t.seasons} sez.` : '') : 'Film', t.y, t.len ? t.len + ' min' : null].filter(Boolean).join(' · ')}<br>
-    ${(t.g || []).map(genreName).join(', ')}<br>${(t.c || []).map(c => COUNTRY[c] || c).join(', ')}</div></div></div>
+    ${(t.g || []).map(genreName).filter(Boolean).join(', ')}<br>${(t.c || []).map(c => COUNTRY[c] || c).join(', ')}<br>${heaviness(t) < -.15 ? '☀︎ lekki' : heaviness(t) > .25 ? '◐ poważny' : '◑ wyważony'}${feats(t).filter(f => f[0] === 'h').slice(0, 3).map(f => ' · ' + THEME_NAMES[f.slice(1)]).join('')}</div></div></div>
   <div class="d-scores">
     ${mine ? `<div class="d-sc me"><span>Twoja ocena</span><b>${mine.r}</b></div>` : p != null ? `<div class="d-sc me"><span>Dla Ciebie</span><b>${fmt(p)}</b></div>` : ''}
     ${t.fr ? `<div class="d-sc"><span>Filmweb</span><b>${fmt(t.fr)}</b><small>${kfmt(t.fn || 0)}</small></div>` : ''}
@@ -946,11 +983,18 @@ function openFilters() {
     `<div class="f-group"><h3>${label}</h3><div class="range"><input type="range" data-f="${key}" min="${min}" max="${max}" step="${step}" value="${f[key]}"><output>${f[key] ? (unit === '%' ? f[key] + '%' : fmt(f[key], step < 1 ? 1 : 0)) : 'dowolnie'}</output></div></div>`;
   const body = $('#sheet .sheet-body');
   body.dataset.id = '';
-  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="margin:0 0 6px;font-family:Georgia,serif">Filtry</h2>
+  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="margin:0 0 6px;font:700 28px var(--sfd)">Filtry</h2>
   <div class="f-group"><h3>Sortuj</h3><div class="row2"><select data-f="sort">
     ${[['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['imdb', 'Ocena IMDb'], ['rt', 'Rotten Tomatoes'], ['mc', 'Metacritic'], ['new', 'Najnowsze'], ['pop', 'Popularne teraz'], ['votes', 'Liczba głosów']]
       .map(([v, l]) => `<option value="${v}"${f.sort === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
-  <div class="f-group"><h3>Rodzaj</h3><div class="f-chips">${[['all', 'Wszystko'], ['movie', 'Filmy'], ['tv', 'Seriale']].map(([v, l]) => `<button class="chip${f.type === v ? ' on' : ''}" data-set="type:${v}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Rodzaj</h3><div class="f-chips">${[['all', 'Wszystko'], ['movie', 'Filmy'], ['tv', 'Seriale']].map(([v, l]) => `<button class="chip${f.type === v ? ' on' : ''}" data-set="type:${v}">${l}</button>`).join('')}
+    <button class="chip${f.mini ? ' on' : ''}" data-toggle="mini">Miniserial</button></div></div>
+  <div class="f-group"><h3>Nastrój</h3><div class="seg">${[['any', 'Dowolnie'], ['light', 'Lekko'], ['mid', 'Pośrodku'], ['heavy', 'Ciężko']].map(([v, l]) => `<button class="${f.mood === v ? 'on' : ''}" data-set="mood:${v}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Okres</h3><div class="f-chips">${Object.entries(PERIODS).map(([v, [l]]) => `<button class="chip${f.period === v ? ' on' : ''}" data-set="period:${v}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Czas trwania</h3><div class="seg">${Object.entries(LENB).map(([v, l]) => `<button class="${f.lenB === v ? 'on' : ''}" data-set="lenB:${v}">${l}</button>`).join('')}</div>
+    <div class="note" style="margin:6px 0 0">Filmy: krótko ≤ 100 min, średnio 100–130, długo > 130 · Seriale (odcinek): ≤ 30, 30–55, > 55 min</div></div>
+  <div class="f-group"><h3>Tematy (dowolny z zaznaczonych)</h3><div class="f-chips">${THEMES.map(([k, l]) => `<button class="chip${(f.themes || []).includes(k) ? ' on' : ''}" data-arr="themes:${k}">${esc(l)}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Dopasowanie</h3><div class="f-chips"><button class="chip${f.sure ? ' on' : ''}" data-toggle="sure">★ Tylko pewniaki – maksymalnie dopasowane</button></div></div>
   <div class="f-group"><h3>Gdzie obejrzeć (abonament / za darmo)</h3><div class="f-chips">
     ${S.local.subs.length ? `<button class="chip${f.onlySubs ? ' on' : ''}" data-toggle="onlySubs">★ Moje serwisy</button>` : ''}
     ${provs.map(([id, p]) => `<button class="chip${f.provs.includes(id) ? ' on' : ''}" data-arr="provs:${id}">${p[1] ? `<img src="${IMG}w45${p[1]}">` : ''}${esc(p[0])}</button>`).join('')}</div></div>
@@ -990,7 +1034,7 @@ function renderQuick() {
   const q = S.quick, body = $('#sheet .sheet-body');
   body.dataset.id = '';
   if (!q || q.i >= q.list.length) {
-    body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="font-family:Georgia,serif">Gotowe</h2>
+    body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="font:700 28px var(--sfd)">Gotowe</h2>
       <p class="note">Dziękuję – ${q ? q.done : 0} odpowiedzi trafiło do modelu. Rekomendacje zostały przeliczone.</p>
       <div class="btn-row"><button class="btn gold" data-quick>Jeszcze 10</button><button class="btn" data-close>Zamknij</button></div>`;
     $('#sheet').hidden = false;
@@ -1043,7 +1087,7 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
@@ -1064,6 +1108,10 @@ document.addEventListener('click', e => {
   if (el.dataset.chip) {
     const [k, v] = el.dataset.chip.split(':'), f = S.f;
     if (k === 'type') f.type = v;
+    if (k === 'mood') f.mood = f.mood === v ? 'any' : v;
+    if (k === 'period') f.period = f.period === v ? 'any' : v;
+    if (k === 'len') f.lenB = f.lenB === v ? 'any' : v;
+    if (k === 'sure') f.sure = !f.sure;
     if (k === 'subs') f.onlySubs = !f.onlySubs;
     if (k === 'aw') { const i = f.awards.indexOf(v); i >= 0 ? f.awards.splice(i, 1) : f.awards.push(v); }
     if (k === 'pl') f.country = f.country === 'PL' ? '' : 'PL';
@@ -1075,10 +1123,11 @@ document.addEventListener('click', e => {
   if (el.dataset.rate) { setRating(sid, +el.dataset.rate); openDetail(sid); return; }
   if (el.dataset.want != null) { S.local.want[sid] = !S.want.has(sid); saveLocal(); mergeRatings(); buildModel(); openDetail(sid); return; }
   if (el.dataset.hide != null) { if (S.local.hidden[sid]) delete S.local.hidden[sid]; else S.local.hidden[sid] = 1; saveLocal(); closeSheet(); buildModel(); render(); return; }
-  if (el.dataset.set) { const [k, v] = el.dataset.set.split(':'); S.f[k] = k === 'minVotes' ? +v : v; saveLocal(); openFilters(); return; }
+  if (el.dataset.set) { const i = el.dataset.set.indexOf(':'), k = el.dataset.set.slice(0, i), v = el.dataset.set.slice(i + 1); S.f[k] = k === 'minVotes' ? +v : v; saveLocal(); openFilters(); return; }
   if (el.dataset.arr) { const [k, v] = el.dataset.arr.split(':'); S.f[k] = S.f[k] || []; const a = S.f[k], i = a.indexOf(v); i >= 0 ? a.splice(i, 1) : a.push(v); saveLocal(); openFilters(); return; }
   if (el.dataset.toggle) { S.f[el.dataset.toggle] = !S.f[el.dataset.toggle]; saveLocal(); openFilters(); return; }
   if (el.dataset.reset != null) { S.f = DEFAULT_F(); saveLocal(); openFilters(); return; }
+  if (el.dataset.resetQuick != null) { S.f = DEFAULT_F(); saveLocal(); render(); return; }
   if (el.dataset.id && (el.classList.contains('card') || el.classList.contains('tile') || el.classList.contains('hero'))) openDetail(el.dataset.id);
 });
 document.addEventListener('input', e => {
