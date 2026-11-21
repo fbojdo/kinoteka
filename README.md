@@ -2,7 +2,7 @@
 
 Prywatna aplikacja (PWA) o filmach i serialach dla iPhone'a. Zawiera:
 
-- Twoje oceny i listę „Chcę zobaczyć” z Filmwebu (profil **Bojryk**), synchronizowane co noc,
+- Twoje oceny i listę „Chcę zobaczyć” z Filmwebu (profil **Bojryk**, nr konta 2570815 – zmienna `FILMWEB_USER_ID`), synchronizowane co noc,
 - katalog około 15 tys. tytułów z ocenami **Filmweb, IMDb, Rotten Tomatoes, Metacritic i TMDB**,
 - filtry: serwis VOD w Polsce (Netflix, Apple TV+, Max, Disney+, Prime…), nagrody (Oscary, Złote Globy, Cannes, Wenecja, Berlinale, BAFTA, Emmy, Orły, Gdynia…), lata produkcji, gatunek, kraj, długość, minimalne oceny,
 - rekomendacje z przewidywaną oceną i uzasadnieniem oraz zakładkę **Trafność**, która uczciwie mierzy, jak dobrze model przewiduje Twoje oceny.
