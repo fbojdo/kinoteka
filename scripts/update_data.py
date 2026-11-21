@@ -228,7 +228,10 @@ def tmdb_details(key):
         "pv": providers, "imdb": imdb, "tr": round(d.get("vote_average") or 0, 1), "tv": d.get("vote_count") or 0,
         "pop": round(d.get("popularity") or 0, 1), "ov": overview,
         "seasons": d.get("number_of_seasons") if kind == "tv" else None,
-        "status": d.get("status"), "_ts": NOW,
+        "status": d.get("status"), "_ts": NOW, "_kn": {str(k): v for k, v in kwn.items()},
+        "_pn": {str(p["provider_id"]): [p["provider_name"], p.get("logo_path"), p.get("display_priority", 99)]
+                for typ in ("flatrate", "free", "ads", "rent", "buy") for p in (prov.get(typ) or [])},
+        "_tvg": [g["id"] for g in d.get("genres", [])] if kind == "tv" else None,
     }
 
 PROVIDERS, KEYWORDS, GENRES = {}, {}, {}
@@ -413,6 +416,9 @@ def main():
         STATUS["notes"].append("TMDB nie odpowiada – sprawdź sekret TMDB_KEY (API Key albo Read Access Token).")
     STATUS["tmdb_key_kind"] = "bearer" if TMDB_KEY.startswith("eyJ") else "api_key"
     STATUS["tmdb_key_len"] = len(TMDB_KEY)
+    for kind in ("movie", "tv"):
+        for g in (tm(f"/genre/{kind}/list", language="pl-PL") or {}).get("genres", []):
+            GENRES[str(g["id"])] = g["name"][:1].upper() + g["name"][1:]
 
     # 1. Filmweb – Twoje listy (publiczne API profilu)
     me = {"user": FW_USER, "ratings": [], "want": []}
@@ -499,7 +505,7 @@ def main():
     keys |= {r["id"] for r in me["ratings"] + me["want"] if r["id"]}
     if len(keys) < 50 and titles:  # awaria TMDB – nie kasuj katalogu
         keys |= set(titles)
-    todo = [k for k in keys if k not in titles or NOW - titles[k].get("_ts", 0) > TMDB_REFRESH_DAYS * 86400]
+    todo = [k for k in keys if k not in titles or "_kn" not in titles[k] or NOW - titles[k].get("_ts", 0) > TMDB_REFRESH_DAYS * 86400]
     todo.sort(key=lambda k: titles.get(k, {}).get("_ts", 0))
     log("TMDB szczegóły do pobrania:", len(todo))
     for i in range(0, len(todo), 500):
@@ -584,10 +590,19 @@ def main():
 
     # 8. Zapis danych dla aplikacji
     catalog, overviews = [], {}
+    SKIP_TV = {10763, 10764, 10767}   # wiadomości, reality, talk-show
     for k in sorted(keys):
         t = titles.get(k)
         if not t:
             continue
+        mine_ids = {r.get("id") for r in me["ratings"] + me["want"]}
+        if k not in mine_ids:
+            if k.startswith("m") and t.get("len") and t["len"] < 40:
+                continue   # krótkie metraże, teledyski
+            if k.startswith("t") and SKIP_TV & set(t.get("g") or []):
+                continue
+        KEYWORDS.update(t.get("_kn") or {})
+        PROVIDERS.update(t.get("_pn") or {})
         o = {x: y for x, y in t.items() if not x.startswith("_") and x != "ov" and y not in (None, [], {}, "")}
         im = t.get("imdb")
         if im and im in imdb:

@@ -361,7 +361,7 @@ function autotune(real) {
 function buildModel() {
   computeNorms();
   const real = trainingSamples();
-  S.preds.clear(); S.reasons.clear(); S.unc = new Map();
+  S.preds.clear(); S.reasons.clear(); S.unc = new Map(); S._fam = null;
   if (real.length < 15) { S.model = null; return; }
   const mu = real.reduce((a, s) => a + s.r, 0) / real.length;
   const tune = autotune(real);
@@ -442,9 +442,9 @@ function pearson(a, b) {
 
 function featLabel(f) {
   const k = f[0], v = f.slice(1);
-  if (k === 'g') return 'gatunek ' + genreName(v).toLowerCase();
+  if (k === 'g') return genreName(v) ? 'gatunek ' + genreName(v).toLowerCase() : null;
   if (k === 'h') return 'temat: ' + (THEME_NAMES[v] || v);
-  if (k === 'k') return 'motyw „' + ((S.meta.keywords || {})[v] || v) + '"';
+  if (k === 'k') return (S.meta.keywords || {})[v] ? 'motyw „' + S.meta.keywords[v] + '"' : null;
   if (k === 'd') return 'reżyser ' + v;
   if (k === 'w') return 'scenarzysta ' + v;
   if (k === 'a') return v;
@@ -476,8 +476,22 @@ function explain(t, max = 3) {
 }
 
 /* Ranking z uwzględnieniem pewności i różnorodności (MMR) */
+function familiarity() {
+  if (S._fam) return S._fam;
+  const dec = {}, n = Math.max(1, S.myRatings.size);
+  for (const id of S.myRatings.keys()) { const t = S.byId.get(id); if (t && t.y) { const d = Math.floor(t.y / 10); dec[d] = (dec[d] || 0) + 1; } }
+  S._fam = { dec, n };
+  return S._fam;
+}
+function famPenalty(t) {
+  // tytuły z epok, których prawie nie oglądasz, wymagają mocniejszych dowodów
+  const F = familiarity(); if (!t.y) return .2;
+  const share = (F.dec[Math.floor(t.y / 10)] || 0) / F.n;
+  const votes = t.iv || t.tv * 20 || 0;
+  return (share < .04 ? .9 * (.04 - share) / .04 : 0) + (votes < 15000 ? .3 : 0);
+}
 function rankRecs(items) {
-  const score = t => (S.preds.get(t.id) ?? 0) - .35 * ((S.unc && S.unc.get(t.id)) || 0) + (t.pop > 30 ? .02 : 0);
+  const score = t => (S.preds.get(t.id) ?? 0) - .35 * ((S.unc && S.unc.get(t.id)) || 0) - famPenalty(t) + (t.pop > 30 ? .02 : 0);
   const sorted = items.map(t => [score(t), t]).sort((a, b) => b[0] - a[0]);
   const head = sorted.slice(0, 160), rest = sorted.slice(160).map(x => x[1]);
   const chosen = [], used = new Map();
@@ -699,7 +713,7 @@ function renderChips() {
 function card(t, mode) {
   const p = S.preds.get(t.id), mine = S.myRatings.get(t.id);
   const poster = t.p ? `style="background-image:url('${IMG}w185${t.p}')"` : '';
-  const genres = (t.g || []).slice(0, 2).map(genreName).join(', ');
+  const genres = (t.g || []).map(genreName).filter(Boolean).slice(0, 2).join(', ');
   const meta = [t.id[0] === 't' ? 'Serial' : null, t.y, genres, t.len ? t.len + ' min' : null].filter(Boolean).join(' · ');
   const sc = [];
   if (t.fr) sc.push(`<span class="sc">Filmweb <b>${fmt(t.fr)}</b></span>`);
