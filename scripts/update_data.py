@@ -38,6 +38,12 @@ def log(*a):
 # ---------------------------------------------------------------- HTTP
 _lock = threading.Lock()
 _last = {}
+STATUS = {"http": {}, "notes": []}
+
+def _err(host, code, url):
+    h = STATUS["http"].setdefault(host, {})
+    h[str(code)] = h.get(str(code), 0) + 1
+    h.setdefault("last_" + str(code), re.sub(r"(api_key|apikey)=[^&]+", r"\1=***", url)[:160])
 
 def http_json(url, headers=None, min_interval=0.0, retries=4, data=None):
     host = urllib.parse.urlparse(url).netloc
@@ -61,6 +67,7 @@ def http_json(url, headers=None, min_interval=0.0, retries=4, data=None):
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as e:
+            _err(host, e.code, url)
             if e.code == 404:
                 return None
             if e.code in (429, 500, 502, 503, 504):
@@ -71,6 +78,7 @@ def http_json(url, headers=None, min_interval=0.0, retries=4, data=None):
         except Exception as e:  # noqa
             time.sleep(1.5 * (attempt + 1))
             if attempt == retries - 1:
+                _err(host, type(e).__name__, url)
                 log("ERR", type(e).__name__, url[:120])
     return None
 
@@ -96,7 +104,7 @@ def write_json(name, obj):
 
 # ---------------------------------------------------------------- Filmweb
 FW = "https://www.filmweb.pl/api/v1"
-FW_H = {"x-locale": "pl_PL", "Origin": "https://www.filmweb.pl", "Referer": "https://www.filmweb.pl/"}
+FW_H = {"x-locale": "pl_PL"}
 
 def fw_get(path):
     return http_json(FW + path, FW_H, min_interval=0.25)
@@ -134,6 +142,8 @@ def fw_rating(fid):
 TM = "https://api.themoviedb.org/3"
 
 def tm(path, **params):
+    if TMDB_KEY.startswith("eyJ"):   # „API Read Access Token" (v4)
+        return http_json(f"{TM}{path}?{urllib.parse.urlencode(params)}", {"Authorization": "Bearer " + TMDB_KEY}, min_interval=0.022)
     params["api_key"] = TMDB_KEY
     return http_json(f"{TM}{path}?{urllib.parse.urlencode(params)}", min_interval=0.022)
 
@@ -323,6 +333,57 @@ def omdb(imdb):
     return res
 
 # ---------------------------------------------------------------- main
+def _walk(o):
+    if isinstance(o, dict):
+        yield o
+        for v in o.values():
+            yield from _walk(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _walk(v)
+
+def parse_filmweb_raw(raw):
+    """Łączy dane przechwycone z API strony i z DOM. Zwraca ({ratings, want}, {fid: info})."""
+    out = {"ratings": {}, "want": {}}
+    titles = {}
+    for kind, bucket in (("votes", "ratings"), ("want", "want")):
+        for typ in ("film", "serial"):
+            is_tv = typ == "serial"
+            for cap in (raw.get(kind) or {}).get(typ, []):
+                u = cap.get("url", "").lower()
+                if kind == "votes" and "vote" not in u:
+                    continue
+                if kind == "want" and "want" not in u:
+                    continue
+                for d in _walk(cap.get("data")):
+                    fid = d.get("entity") or d.get("filmId") or d.get("titleId") or (d.get("id") if "rate" in d else None)
+                    if not isinstance(fid, int) or fid < 10:
+                        continue
+                    rec = out[bucket].setdefault(str(fid), {"fw": str(fid), "tv": is_tv})
+                    if bucket == "ratings" and isinstance(d.get("rate"), (int, float)) and 1 <= d["rate"] <= 10:
+                        rec["r"] = int(d["rate"])
+                    dt = entry_date(d)
+                    if dt:
+                        rec["date"] = dt
+                    if d.get("favorite") or d.get("favourite"):
+                        rec["fav"] = True
+            for it in (raw.get("dom") or {}).get(f"{kind}/{typ}", []):
+                fid = str(it.get("entity") or "")
+                if not fid:
+                    continue
+                if it.get("title") or it.get("year"):
+                    titles[fid] = {"pl": it.get("title"), "y": it.get("year"), "tv": it.get("type") == "serial"}
+                if it.get("link") and kind == "votes":
+                    continue  # w ocenach link do tytułu służy tylko jako źródło tytułu/roku
+                rec = out[bucket].setdefault(fid, {"fw": fid, "tv": it.get("type") == "serial" or is_tv})
+                if bucket == "ratings" and it.get("rate") and "r" not in rec:
+                    rec["r"] = int(it["rate"])
+                if it.get("date") and "date" not in rec:
+                    rec["date"] = str(it["date"])[:10]
+    ratings = [r for r in out["ratings"].values() if r.get("r")]
+    want = [w for w in out["want"].values() if w["fw"] not in out["ratings"]]
+    return {"ratings": ratings, "want": want}, titles
+
 def entry_fw_id(e):
     return str(e.get("entity") or e.get("id") or e.get("filmId") or e.get("film") or "")
 
@@ -350,25 +411,30 @@ def main():
     wd = st.setdefault("wd", {})                  # imdb -> wikidata
     PROVIDERS.update(st.get("providers", {})); KEYWORDS.update(st.get("keywords", {})); GENRES.update(st.get("genres", {}))
 
-    # 1. Filmweb – Twoje listy
+    # 0. Test kluczy
+    cfg = tm("/configuration")
+    STATUS["tmdb_ok"] = bool(cfg)
+    if not cfg:
+        STATUS["notes"].append("TMDB nie odpowiada – sprawdź sekret TMDB_KEY (API Key albo Read Access Token).")
+    STATUS["tmdb_key_kind"] = "bearer" if TMDB_KEY.startswith("eyJ") else "api_key"
+    STATUS["tmdb_key_len"] = len(TMDB_KEY)
+
+    # 1. Filmweb – Twoje listy (przechwycone z profilu przez scripts/filmweb_scrape.py)
     me = {"user": FW_USER, "ratings": [], "want": []}
-    fw_ok = False
-    for kind, bucket in (("votes", "ratings"), ("want2see", "want")):
-        for typ in ("film", "serial"):
-            items = fw_list(kind, typ)
-            log(f"Filmweb {kind}/{typ}: {len(items)}")
-            fw_ok = fw_ok or bool(items)
-            for e in items:
-                fid = entry_fw_id(e)
-                if not fid:
-                    continue
-                rec = {"fw": fid, "tv": typ == "serial", "date": entry_date(e)}
-                if bucket == "ratings":
-                    rec["r"] = e.get("rate")
-                    if e.get("favorite") or e.get("favourite"):
-                        rec["fav"] = True
-                me[bucket].append(rec)
-    if not fw_ok and st.get("me"):
+    raw_path = os.path.join(ROOT, "state", "filmweb_raw.json")
+    raw = json.load(open(raw_path, encoding="utf-8")) if os.path.exists(raw_path) else {}
+    lists, fw_titles = parse_filmweb_raw(raw)
+    me["ratings"], me["want"] = lists["ratings"], lists["want"]
+    for fid, inf in fw_titles.items():
+        fwinfo.setdefault(fid, {}).update({k: v for k, v in inf.items() if v})
+    STATUS["filmweb"] = {"api_urls": raw.get("api_urls", [])[:40], "error": raw.get("error"),
+                         "dom_counts": {k: len(v) for k, v in (raw.get("dom") or {}).items()},
+                         "api_counts": {f"{k}/{t}": len(v) for k in ("votes", "want") for t, v in (raw.get(k) or {}).items()},
+                         "ratings": len(me["ratings"]), "want": len(me["want"]),
+                         "sample": json.dumps(((raw.get("votes") or {}).get("film") or [None])[:1], ensure_ascii=False)[:1500],
+                         "dom_sample": (raw.get("dom") or {}).get("votes/film", [])[:5]}
+    log(f"Filmweb: ocen {len(me['ratings'])}, chcę zobaczyć {len(me['want'])}")
+    if not me["ratings"] and st.get("me", {}).get("ratings"):
         log("UWAGA: Filmweb nic nie zwrócił – zostawiam poprzednie oceny.")
         me = st["me"]
 
@@ -377,7 +443,7 @@ def main():
     log("Do zmapowania z Filmwebu:", len(need))
     if need:
         for r in need:
-            if r["fw"] not in fwinfo:
+            if not (fwinfo.get(r["fw"]) or {}).get("t"):
                 info = fw_info(r["fw"]) or {}
                 fwinfo[r["fw"]] = {"t": info.get("originalTitle") or info.get("title"), "pl": info.get("title"),
                                    "y": info.get("year"), "tv": r["tv"]}
@@ -506,6 +572,9 @@ def main():
     write_json("catalog.json", catalog)
     write_json("me.json", me)
     write_json("meta.json", meta)
+    STATUS["catalog"] = len(catalog)
+    STATUS["updated"] = meta["updated"]
+    write_json("status.json", STATUS)
     for s, v in overviews.items():
         write_json(f"ov/{s}.json", v)
     st["providers"], st["keywords"], st["genres"], st["me"] = PROVIDERS, KEYWORDS, GENRES, me

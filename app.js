@@ -64,6 +64,11 @@ async function load() {
     $('#view').innerHTML = `<div class="empty">Brak danych katalogu.<br><small>Pierwsza aktualizacja w GitHub Actions jeszcze się nie zakończyła albo brakuje klucza TMDB.</small></div>`;
     return;
   }
+  if (!S.cat.length) {
+    let st = {}; try { st = await getJSON('data/status.json'); } catch (e) { /* brak */ }
+    $('#view').innerHTML = `<div class="empty">Katalog jest jeszcze pusty.<br><small>${esc((st.notes || []).join(' ') || 'Aktualizacja danych trwa albo się nie powiodła.')}</small><br><br><small>Oceny z Filmwebu: ${st.filmweb?.ratings ?? '–'} · TMDB: ${st.tmdb_ok ? 'OK' : 'błąd'}</small></div>`;
+    return;
+  }
   for (const t of S.cat) S.byId.set(t.id, t);
   mergeRatings();
   buildModel();
