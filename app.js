@@ -497,6 +497,123 @@ function rankRecs(items) {
   return [...chosen, ...rest];
 }
 
+/* ================================================================== PROFIL WIDZA
+   Portret gustu z Twoich ocen: wymiary (osie), archetyp, tematy, twórcy, kanon,
+   miejsca, gdzie różnisz się od tłumu. To opis gustu filmowego – nie test psychologiczny. */
+const LIGHT_G = new Set([35, 10751, 16, 10402, 10749, 12]);      // komedia, familijny, animacja, muzyczny, romans, przygoda
+const HEAVY_G = new Set([18, 10752, 36, 99, 80, 53, 9648, 10768]);  // dramat, wojenny, historyczny, dokument, kryminał, thriller…
+function entropy(counts) {
+  const tot = counts.reduce((a, b) => a + b, 0); if (!tot) return 0;
+  return -counts.reduce((a, c) => c ? a + (c / tot) * Math.log(c / tot) : a, 0) / Math.log(Math.max(2, counts.length));
+}
+function profileData() {
+  const R = [...S.myRatings.entries()].map(([id, r]) => ({ t: S.byId.get(id), r: r.r, date: r.date })).filter(x => x.t);
+  if (R.length < 20) return null;
+  const mean = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
+  const mu = mean(R.map(x => x.r));
+  const sd = Math.sqrt(mean(R.map(x => (x.r - mu) ** 2)));
+  const crowdPairs = R.filter(x => x.t.fr || x.t.ir);
+  const generosity = mean(crowdPairs.map(x => x.r - (x.t.fr || x.t.ir)));
+  const corr = (k, sel) => { const p = R.filter(x => sel(x.t) != null); return p.length > 15 ? pearson(p.map(x => sel(x.t)), p.map(x => x.r)) : null; };
+  const cAud = corr('aud', t => t.fr || t.ir), cCrit = corr('crit', t => t.mc != null ? t.mc / 10 : (t.rt != null ? t.rt / 10 : null));
+  const votes = R.map(x => Math.log10(1 + (x.t.iv || x.t.tv * 20 || 1)));
+  const mainstream = mean(votes);                              // ~3 nisza … ~6 hit
+  const years = R.filter(x => x.t.y).map(x => x.t.y);
+  const medYear = years.sort((a, b) => a - b)[Math.floor(years.length / 2)];
+  const reg = {}; R.forEach(x => { const g = regionOf(x.t) || 'other'; reg[g] = (reg[g] || 0) + 1; });
+  const nonUS = 1 - (reg.us || 0) / R.length;
+  let light = 0, heavy = 0; R.forEach(x => { (x.t.g || []).forEach(g => { if (LIGHT_G.has(g)) light++; if (HEAVY_G.has(g)) heavy++; }); });
+  const gravity = heavy / Math.max(1, light + heavy);
+  const gc = {}; R.forEach(x => (x.t.g || []).forEach(g => gc[g] = (gc[g] || 0) + 1));
+  const dc = {}; R.forEach(x => (x.t.d || []).forEach(d => dc[d] = (dc[d] || 0) + 1));
+  const variety = (entropy(Object.values(gc)) + Math.min(1, Object.keys(dc).length / R.length)) / 2;
+  const tvShare = R.filter(x => typ(x.t) === 't').length / R.length;
+  const lens = R.filter(x => x.t.len && typ(x.t) === 'm').map(x => x.t.len);
+  // tematy / regiony / twórcy z odchyleniem od tłumu
+  const aff = (pref, ty, minN) => {
+    const s = {}, c = {};
+    R.forEach(x => { if (ty && typ(x.t) !== ty) return; const base = x.t.fr || x.t.ir || mu; for (const f of feats(x.t)) if (f[0] === pref) { s[f] = (s[f] || 0) + (x.r - base - generosity); c[f] = (c[f] || 0) + 1; } });
+    return Object.keys(s).filter(f => c[f] >= minN).map(f => ({ f, a: s[f] / (c[f] + 3), n: c[f] })).sort((a, b) => b.a - a.a);
+  };
+  const themeCount = {}; R.forEach(x => new Set(feats(x.t).filter(f => f[0] === 'h')).forEach(f => themeCount[f] = (themeCount[f] || 0) + 1));
+  const dirs = Object.entries(dc).filter(([, n]) => n >= 2).map(([d, n]) => ({ d, n, avg: mean(R.filter(x => (x.t.d || []).includes(d)).map(x => x.r)) })).sort((a, b) => b.avg * Math.sqrt(b.n) - a.avg * Math.sqrt(a.n));
+  const canon = R.slice().sort((a, b) => b.r - a.r || (b.t.fr || 0) - (a.t.fr || 0)).slice(0, 10);
+  const against = crowdPairs.map(x => ({ ...x, d: x.r - (x.t.fr || x.t.ir) - generosity })).sort((a, b) => b.d - a.d);
+  // dryf gustu: porównanie ostatnich 2 lat z wcześniejszymi
+  const recent = R.filter(x => x.date && x.date >= new Date(Date.now() - 2 * 3.15e10).toISOString().slice(0, 10));
+  const older = R.filter(x => x.date && !recent.includes(x));
+  const shift = (sel) => recent.length >= 15 && older.length >= 15 ? mean(recent.map(x => sel(x.t))) - mean(older.map(x => sel(x.t))) : null;
+  return {
+    R, mu, sd, generosity, cAud, cCrit, mainstream, medYear, reg, nonUS, gravity, variety, tvShare, lens,
+    themesM: aff('h', 'm', 3), themesT: aff('h', 't', 2), regions: aff('r', null, 3), themeCount, dirs, canon,
+    above: against.slice(0, 6), below: against.slice(-6).reverse(),
+    driftEU: shift(t => regionOf(t) === 'us' ? 0 : 1), driftHeavy: shift(t => (t.g || []).some(g => HEAVY_G.has(g)) ? 1 : 0), driftTV: shift(t => typ(t) === 't' ? 1 : 0),
+  };
+}
+function archetype(P) {
+  const tags = [];
+  if (P.nonUS > .5 && P.gravity > .6) tags.push(['Koneser kina autorskiego', 'Szukasz filmów spoza głównego nurtu Hollywood, z ciężarem i przemyśleniem.']);
+  else if (P.nonUS > .5) tags.push(['Kosmopolita', 'Chętnie wychodzisz poza kino amerykańskie – ciekawią Cię inne kultury i style opowiadania.']);
+  if (P.gravity > .7) tags.push(['Poszukiwacz sensu', 'Wybierasz historie, które poruszają poważne tematy – rozrywka sama w sobie to dla Ciebie za mało.']);
+  else if (P.gravity < .4) tags.push(['Hedonista ekranu', 'Kino to dla Ciebie przyjemność i odpoczynek – liczy się lekkość i dobra zabawa.']);
+  if (P.mainstream < 4.3) tags.push(['Odkrywca', 'Sięgasz po tytuły mało znane – nie potrzebujesz, by coś było głośne, żeby dać temu szansę.']);
+  else if (P.mainstream > 5.3) tags.push(['Uczestnik rozmowy', 'Oglądasz to, o czym się mówi – kino jest dla Ciebie też tematem do rozmów z innymi.']);
+  if (P.tvShare > .35) tags.push(['Maratończyk', 'Lubisz długie formy i rozbudowane postaci – seriale to ważna część Twojego oglądania.']);
+  if (P.variety > .75) tags.push(['Eklektyk', 'Twój gust jest szeroki – skaczesz między gatunkami i twórcami.']);
+  else if (P.variety < .5) tags.push(['Wierny swoim', 'Masz wyraźne ulubione rejony i do nich wracasz.']);
+  if (P.medYear && P.medYear < 2000) tags.push(['Strażnik klasyki', 'Doceniasz starsze kino – nie musi być nowe, żeby było warte uwagi.']);
+  return tags.length ? tags : [['Widz zrównoważony', 'Twój gust jest wyważony – bez skrajności w żadną stronę.']];
+}
+function axis(label, left, right, v) {   // v w [0,1]
+  const p = Math.round(Math.max(0, Math.min(1, v)) * 100);
+  return `<div class="axis"><div class="ax-l"><span>${left}</span><b>${label}</b><span>${right}</span></div><div class="ax-bar"><i style="left:${p}%"></i></div></div>`;
+}
+function viewProfile() {
+  const v = $('#view'), P = profileData();
+  if (!P) { v.innerHTML = `<div class="empty">Profil powstanie, gdy będzie co najmniej 20 Twoich ocen dopasowanych do katalogu.</div>`; return; }
+  const arch = archetype(P);
+  const pct = x => Math.round(x * 100) + '%';
+  const lbl = f => featLabel(f);
+  const regList = Object.entries(P.reg).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${REGION_NAMES[k] || k} ${pct(n / P.R.length)}`).join(' · ');
+  const topThemes = Object.entries(P.themeCount).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const drift = [];
+  if (P.driftEU != null && Math.abs(P.driftEU) > .08) drift.push(P.driftEU > 0 ? 'coraz częściej sięgasz po kino spoza USA' : 'ostatnio częściej wracasz do kina amerykańskiego');
+  if (P.driftHeavy != null && Math.abs(P.driftHeavy) > .08) drift.push(P.driftHeavy > 0 ? 'wybierasz coraz poważniejsze tytuły' : 'ostatnio szukasz lżejszych historii');
+  if (P.driftTV != null && Math.abs(P.driftTV) > .08) drift.push(P.driftTV > 0 ? 'seriale zajmują coraz więcej miejsca' : 'wracasz do filmów kosztem seriali');
+  // zdania o Tobie – ostrożnie, jako hipotezy wynikające z wyborów
+  const traits = [];
+  if (P.themesM[0]) traits.push(`W filmach najmocniej reagujesz na: <b>${esc(P.themesM.filter(x => x.a > .1).slice(0, 3).map(x => lbl(x.f).replace('temat: ', '')).join(', ') || '—')}</b>.`);
+  if (P.themesT[0]) traits.push(`W serialach cenisz: <b>${esc(P.themesT.filter(x => x.a > .1).slice(0, 3).map(x => lbl(x.f).replace('temat: ', '')).join(', ') || '—')}</b>.`);
+  if (P.cCrit != null && P.cAud != null) traits.push(P.cCrit > P.cAud + .05 ? 'Twoje oceny są bliżej krytyków niż publiczności – zwracasz uwagę na warsztat i oryginalność, nie tylko na emocje.' : P.cAud > P.cCrit + .05 ? 'Twoje oceny są bliżej publiczności niż krytyków – liczy się dla Ciebie przede wszystkim to, jak film działa na widza.' : 'Twoje oceny równie dobrze zgadzają się z krytykami, jak z publicznością.');
+  traits.push(P.sd < 1.3 ? 'Oceniasz spokojnie i konsekwentnie – rzadko skrajnie.' : 'Mocno różnicujesz oceny – wiesz, co Cię zachwyca, a co nie.');
+  if (P.lens.length > 20) { const m = P.lens.reduce((a, b) => a + b, 0) / P.lens.length; traits.push(m > 125 ? 'Nie boisz się długich filmów – cierpliwość do wolnego tempa to Twoja mocna strona.' : 'Wolisz zwarte historie – rzadko sięgasz po bardzo długie filmy.'); }
+  v.innerHTML = `
+  <div class="note">Portret Twojego gustu na podstawie ${P.R.length} ocen. To interpretacja wyborów filmowych – nie test psychologiczny.</div>
+  <div class="section-h">Twój typ widza</div>
+  ${arch.slice(0, 3).map(([n, d]) => `<div class="arch"><b>${n}</b><span>${d}</span></div>`).join('')}
+  <div class="section-h">Twoje osie</div>
+  ${axis('Wymagania', 'wyrozumiały', 'surowy', .5 - P.generosity / 2)}
+  ${axis('Nastrój', 'lekko', 'poważnie', P.gravity)}
+  ${axis('Popularność', 'nisza', 'hity', (P.mainstream - 3.5) / 2.5)}
+  ${axis('Geografia', 'Hollywood', 'świat', P.nonUS)}
+  ${axis('Epoka', 'klasyka', 'nowości', P.medYear ? (P.medYear - 1975) / 50 : .5)}
+  ${axis('Różnorodność', 'wierny', 'eklektyczny', P.variety)}
+  ${axis('Forma', 'filmy', 'seriale', P.tvShare * 1.6)}
+  <div class="section-h">Co mówią o Tobie Twoje wybory</div>
+  <ul class="reasons">${traits.map(t => `<li>${t}</li>`).join('')}</ul>
+  ${drift.length ? `<div class="note">Zmiana w ostatnich 2 latach: ${drift.join('; ')}.</div>` : ''}
+  <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
+  <div class="section-h">Tematy, do których wracasz</div>
+  <div class="f-chips">${topThemes.map(([f, n]) => `<span class="chip">${esc(THEME_NAMES[f.slice(1)] || f)} · ${n}</span>`).join('')}</div>
+  ${P.dirs.length ? `<div class="section-h">Twoi twórcy</div><table class="mini">${P.dirs.slice(0, 8).map(x => `<tr><td>${esc(x.d)}</td><td>${x.n} tyt.</td><td>śr. ${fmt(x.avg)}</td></tr>`).join('')}</table>` : ''}
+  <div class="section-h">Twój kanon</div>
+  ${list(P.canon.map(x => x.t), 'mine')}
+  <div class="section-h">Wbrew tłumowi – cenisz bardziej niż inni</div>
+  <table class="mini">${P.above.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="good">Ty ${x.r}</td></tr>`).join('')}</table>
+  <div class="section-h">Rozczarowania – cenisz mniej niż inni</div>
+  <table class="mini">${P.below.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="bad">Ty ${x.r}</td></tr>`).join('')}</table>`;
+}
+
 /* ================================================================== FILTRY */
 function passes(t, f, ignoreSeen) {
   if (f.type === 'movie' && t.id[0] !== 'm') return false;
@@ -554,19 +671,19 @@ function search(q) {
 
 /* ================================================================== WIDOKI */
 function render() {
-  const titles = { rec: 'Dla Ciebie', browse: 'Katalog', mine: 'Moje', stats: 'Trafność' };
+  const titles = { rec: 'Dla Ciebie', browse: 'Katalog', mine: 'Moje', profile: 'Profil', stats: 'Trafność' };
   $('#title').textContent = titles[S.tab];
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   $('#searchBar').hidden = S.tab !== 'browse';
   $('#filterBtn').hidden = !(S.tab === 'rec' || S.tab === 'browse');
   const n = activeFilterCount(); $('#filterCount').hidden = !n; $('#filterCount').textContent = n;
   renderChips();
-  ({ rec: viewRec, browse: viewBrowse, mine: viewMine, stats: viewStats })[S.tab]();
+  ({ rec: viewRec, browse: viewBrowse, mine: viewMine, profile: viewProfile, stats: viewStats })[S.tab]();
 }
 
 function renderChips() {
   const el = $('#chips');
-  if (S.tab === 'mine' || S.tab === 'stats') { el.innerHTML = ''; return; }
+  if (S.tab === 'mine' || S.tab === 'stats' || S.tab === 'profile') { el.innerHTML = ''; return; }
   const f = S.f;
   const chips = [
     ['type:all', 'Wszystko', f.type === 'all'], ['type:movie', 'Filmy', f.type === 'movie'], ['type:tv', 'Seriale', f.type === 'tv'],
