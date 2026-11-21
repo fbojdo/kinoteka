@@ -222,7 +222,7 @@ def tmdb_details(key):
     return {
         "id": key, "t": title, "ot": otitle if otitle != title else None, "y": int(year) if year.isdigit() else None,
         "g": [g["id"] for g in d.get("genres", [])], "len": runtime or None,
-        "p": d.get("poster_path"), "c": [c.get("iso_3166_1") for c in d.get("production_countries", [])] or d.get("origin_country", []),
+        "p": d.get("poster_path"), "bd": d.get("backdrop_path"), "c": [c.get("iso_3166_1") for c in d.get("production_countries", [])] or d.get("origin_country", []),
         "lang": d.get("original_language"), "d": directors, "w": writers, "a": cast, "k": kw[:25],
         "pv": providers, "imdb": imdb, "tr": round(d.get("vote_average") or 0, 1), "tv": d.get("vote_count") or 0,
         "pop": round(d.get("popularity") or 0, 1), "ov": overview,

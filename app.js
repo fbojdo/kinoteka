@@ -588,19 +588,21 @@ function viewProfile() {
   traits.push(P.sd < 1.3 ? 'Oceniasz spokojnie i konsekwentnie – rzadko skrajnie.' : 'Mocno różnicujesz oceny – wiesz, co Cię zachwyca, a co nie.');
   if (P.lens.length > 20) { const m = P.lens.reduce((a, b) => a + b, 0) / P.lens.length; traits.push(m > 125 ? 'Nie boisz się długich filmów – cierpliwość do wolnego tempa to Twoja mocna strona.' : 'Wolisz zwarte historie – rzadko sięgasz po bardzo długie filmy.'); }
   v.innerHTML = `
-  <div class="note">Portret Twojego gustu na podstawie ${P.R.length} ocen. To interpretacja wyborów filmowych – nie test psychologiczny.</div>
+  <div class="eyebrow" style="margin-top:6px">Portret widza · ${P.R.length} ocen</div>
+  <p class="lead">${esc(arch.slice(0, 3).map((x, i) => i ? x[0].toLowerCase() : x[0]).join(arch.length > 2 ? ', ' : ' i ').replace(/, ([^,]*)$/, ' i $1'))}.</p>
+  <div class="note">To interpretacja Twoich wyborów filmowych – nie test psychologiczny.</div>
   <div class="section-h">Twój typ widza</div>
   ${arch.slice(0, 3).map(([n, d]) => `<div class="arch"><b>${n}</b><span>${d}</span></div>`).join('')}
   <div class="section-h">Twoje osie</div>
-  ${axis('Wymagania', 'wyrozumiały', 'surowy', .5 - P.generosity / 2)}
+  <div class="axes">${axis('Wymagania', 'wyrozumiały', 'surowy', .5 - P.generosity / 2)}
   ${axis('Nastrój', 'lekko', 'poważnie', P.gravity)}
   ${axis('Popularność', 'nisza', 'hity', (P.mainstream - 3.5) / 2.5)}
   ${axis('Geografia', 'Hollywood', 'świat', P.nonUS)}
   ${axis('Epoka', 'klasyka', 'nowości', P.medYear ? (P.medYear - 1975) / 50 : .5)}
   ${axis('Różnorodność', 'wierny', 'eklektyczny', P.variety)}
-  ${axis('Forma', 'filmy', 'seriale', P.tvShare * 1.6)}
+  ${axis('Forma', 'filmy', 'seriale', P.tvShare * 1.6)}</div>
   <div class="section-h">Co mówią o Tobie Twoje wybory</div>
-  <ul class="reasons">${traits.map(t => `<li>${t}</li>`).join('')}</ul>
+  <div class="arch"><ul class="reasons">${traits.map(t => `<li>${t}</li>`).join('')}</ul></div>
   ${drift.length ? `<div class="note">Zmiana w ostatnich 2 latach: ${drift.join('; ')}.</div>` : ''}
   <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
   <div class="section-h">Tematy, do których wracasz</div>
@@ -672,7 +674,7 @@ function search(q) {
 /* ================================================================== WIDOKI */
 function render() {
   const titles = { rec: 'Dla Ciebie', browse: 'Katalog', mine: 'Moje', profile: 'Profil', stats: 'Trafność' };
-  $('#title').textContent = titles[S.tab];
+  $('#title').innerHTML = (S.tab === 'rec' ? `<span class="eyebrow-date">${new Date().toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' })}</span>` : '') + titles[S.tab];
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   $('#searchBar').hidden = S.tab !== 'browse';
   $('#filterBtn').hidden = !(S.tab === 'rec' || S.tab === 'browse');
@@ -700,7 +702,7 @@ function card(t, mode) {
   const genres = (t.g || []).slice(0, 2).map(genreName).join(', ');
   const meta = [t.id[0] === 't' ? 'Serial' : null, t.y, genres, t.len ? t.len + ' min' : null].filter(Boolean).join(' · ');
   const sc = [];
-  if (t.fr) sc.push(`<span class="sc fw">FW <b>${fmt(t.fr)}</b></span>`);
+  if (t.fr) sc.push(`<span class="sc">Filmweb <b>${fmt(t.fr)}</b></span>`);
   if (t.ir) sc.push(`<span class="sc">IMDb <b>${fmt(t.ir)}</b></span>`);
   if (t.rt != null) sc.push(`<span class="sc">RT <b>${t.rt}%</b></span>`);
   if (t.mc != null) sc.push(`<span class="sc">MC <b>${t.mc}</b></span>`);
@@ -711,19 +713,37 @@ function card(t, mode) {
   const why = mode === 'rec' ? explain(t, 1)[0] : '';
   const right = mine ? `<div class="mine"><b>${mine.r}</b><span>Ty</span></div>`
     : p != null ? `<div class="pred"><b>${fmt(p)}</b><span>dla Ciebie</span></div>` : '';
-  return `<div class="card" data-id="${t.id}">
+  return `<button class="card" data-id="${t.id}">
     <div class="poster" ${poster}>${t.p ? '' : `<div class="ph">${esc(t.t)}</div>`}</div>
     <div class="info"><div class="ttl">${esc(t.t)}</div><div class="sub">${esc(meta)}</div>
       ${why ? `<div class="why">${esc(why)}</div>` : aw}
-      <div class="scores">${sc.join('')}</div>${provs ? `<div class="provs">${provs}</div>` : ''}</div>${right}</div>`;
+      <div class="scores">${sc.join('')}</div>${provs ? `<div class="provs">${provs}</div>` : ''}</div>${right}</button>`;
 }
 
 function list(items, mode) {
   const shown = items.slice(0, S.limit);
-  return shown.map(t => card(t, mode)).join('') +
+  return `<div class="list">${shown.map(t => card(t, mode)).join('')}</div>` +
     (items.length > S.limit ? `<button class="more" data-more>Pokaż więcej (${items.length - S.limit})</button>` : '');
 }
 
+function tile(t) {
+  const p = S.preds.get(t.id), mine = S.myRatings.get(t.id);
+  return `<button class="tile" data-id="${t.id}"><div class="poster" ${t.p ? `style="background-image:url('${IMG}w342${t.p}')"` : ''}>${t.p ? '' : `<div class="ph">${esc(t.t)}</div>`}</div>
+    <div class="t1">${esc(t.t)}</div><div class="t2">${mine ? `Twoja ocena <b>${mine.r}</b>` : p != null ? `<b>${fmt(p)}</b> · ${t.y || ''}` : t.y || ''}</div></button>`;
+}
+function shelf(title, items, more) {
+  if (!items.length) return '';
+  return `<div class="section-h">${esc(title)}${more ? `<small>${more}</small>` : ''}</div><div class="shelf">${items.map(tile).join('')}</div>`;
+}
+function hero(t) {
+  const bg = t.bd ? `${IMG}w1280${t.bd}` : t.p ? `${IMG}w780${t.p}` : '';
+  const why = explain(t, 1)[0] || '';
+  const meta = [typ(t) === 't' ? 'Serial' : 'Film', t.y, (t.g || []).slice(0, 2).map(genreName).join(', ')].filter(Boolean).join(' · ');
+  return `<button class="hero" data-id="${t.id}" ${bg ? `style="background-image:url('${bg}')"` : ''}>
+    <div class="h-top"><div class="eyebrow">Na dziś dla Ciebie</div><h2>${esc(t.t)}</h2></div>
+    <div class="h-bot">${why ? `<div class="why">${esc(why)}</div>` : ''}
+      <div class="h-meta"><span class="match"><b>${fmt(S.preds.get(t.id))}</b> dla Ciebie</span><span>${esc(meta)}</span></div></div></button>`;
+}
 function viewRec() {
   const v = $('#view');
   if (!S.model) {
@@ -732,15 +752,28 @@ function viewRec() {
   }
   let items = S.cat.filter(t => passes(t, S.f) && !S.myRatings.has(t.id) && !S.local.hidden[t.id]);
   items = S.f.sort === 'match' ? rankRecs(items) : items.sort(sortFn(S.f.sort));
-  const want = items.filter(t => S.want.has(t.id)).slice(0, 8);
-  const ev = evaluate();
-  let html = ev ? `<div class="note">Model zna ${ev.n} Twoich ocen · w teście myli się średnio o <b>${fmt(ev.cv.mae, 2)}</b> pkt</div>` : '';
-  html += `<button class="quick" data-quick><b>⚡ Szybkie dopasowanie</b><span>10 tytułów, co do których model jest najmniej pewny – Twoje odpowiedzi najbardziej go wyostrzą</span></button>`;
-  if (want.length && S.f.sort === 'match') {
-    html += `<div class="section-h">Z Twojej listy „Chcę zobaczyć"</div>` + want.slice(0, 4).map(t => card(t, 'rec')).join('');
-    html += `<div class="section-h">Najlepiej dopasowane</div>`;
+  if (!items.length) { v.innerHTML = `<div class="empty">Nic nie pasuje do filtrów.</div>`; return; }
+  const filtered = activeFilterCount() > 0 || S.f.sort !== 'match';
+  let html = '';
+  if (!filtered) {
+    const used = new Set();
+    const pick = (arr, n) => { const out = []; for (const t of arr) { if (out.length >= n) break; if (!used.has(t.id)) { out.push(t); used.add(t.id); } } return out; };
+    const top = pick(items.filter(t => t.p || t.bd), 1)[0];
+    if (top) html += hero(top);
+    html += `<button class="quick" data-quick><i>⚡︎</i><div><b>Szybkie dopasowanie</b><span>10 pytań, które najbardziej wyostrzą rekomendacje</span></div></button>`;
+    const mineSubs = S.local.subs.length ? items.filter(t => S.local.subs.some(p => (t.pv || {})[p] && 'sfa'.includes(t.pv[p]))) : [];
+    html += shelf('Na Twoich serwisach', pick(mineSubs, 12));
+    html += shelf('Z Twojej listy „Chcę zobaczyć”', pick(items.filter(t => S.want.has(t.id)), 12));
+    html += shelf('Filmy dla Ciebie', pick(items.filter(t => typ(t) === 'm'), 12));
+    html += shelf('Seriale dla Ciebie', pick(items.filter(t => typ(t) === 't'), 12));
+    html += shelf('Kino europejskie', pick(items.filter(t => ['eu', 'uk', 'pl'].includes(regionOf(t))), 12));
+    html += shelf('Nagradzane, których nie znasz', pick(items.filter(t => (t.aw || []).length), 12));
+    html += shelf('Nowości', pick(items.filter(t => t.y >= new Date().getFullYear() - 1), 12));
+    html += `<div class="section-h">Wszystkie rekomendacje</div>`;
+  } else {
+    html += `<div class="note">${items.length.toLocaleString('pl')} tytułów pasuje do filtrów</div>`;
   }
-  v.innerHTML = html + (items.length ? list(items, 'rec') : `<div class="empty">Nic nie pasuje do filtrów.</div>`);
+  v.innerHTML = html + list(items, 'rec');
 }
 
 function viewBrowse() {
@@ -848,8 +881,8 @@ async function openDetail(id) {
   const tmdbUrl = `https://www.themoviedb.org/${t.id[0] === 'm' ? 'movie' : 'tv'}/${t.id.slice(1)}`;
   const awards = [...(t.aw || []).map(a => `🏆 ${AWARDS[a]}`), ...(t.an || []).map(a => `nominacja: ${AWARDS[a]}`)];
   const body = $('#sheet .sheet-body');
-  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
-  <div class="d-head"><div class="poster big" ${t.p ? `style="background-image:url('${IMG}w342${t.p}')"` : ''}></div>
+  body.innerHTML = `${t.bd ? `<div class="d-hero" style="background-image:url('${IMG}w1280${t.bd}')"></div>` : '<div class="grab"></div>'}<button class="x" data-close aria-label="Zamknij">✕</button>
+  <div class="d-head${t.bd ? ' over' : ''}"><div class="poster big" ${t.p ? `style="background-image:url('${IMG}w342${t.p}')"` : ''}></div>
     <div><h2>${esc(t.t)}</h2>${t.ot ? `<div class="d-ot">${esc(t.ot)}</div>` : ''}
     <div class="d-meta">${[t.id[0] === 't' ? 'Serial' + (t.seasons ? `, ${t.seasons} sez.` : '') : 'Film', t.y, t.len ? t.len + ' min' : null].filter(Boolean).join(' · ')}<br>
     ${(t.g || []).map(genreName).join(', ')}<br>${(t.c || []).map(c => COUNTRY[c] || c).join(', ')}</div></div></div>
@@ -1032,7 +1065,7 @@ document.addEventListener('click', e => {
   if (el.dataset.arr) { const [k, v] = el.dataset.arr.split(':'); S.f[k] = S.f[k] || []; const a = S.f[k], i = a.indexOf(v); i >= 0 ? a.splice(i, 1) : a.push(v); saveLocal(); openFilters(); return; }
   if (el.dataset.toggle) { S.f[el.dataset.toggle] = !S.f[el.dataset.toggle]; saveLocal(); openFilters(); return; }
   if (el.dataset.reset != null) { S.f = DEFAULT_F(); saveLocal(); openFilters(); return; }
-  if (el.dataset.id && el.classList.contains('card')) openDetail(el.dataset.id);
+  if (el.dataset.id && (el.classList.contains('card') || el.classList.contains('tile') || el.classList.contains('hero'))) openDetail(el.dataset.id);
 });
 document.addEventListener('input', e => {
   const el = e.target;
