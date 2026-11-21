@@ -54,16 +54,21 @@ def _err(host, code, url):
 
 def http_json(url, headers=None, min_interval=0.0, retries=4, data=None, timeout=30):
     host = urllib.parse.urlparse(url).netloc
+    if time_left() < 3:          # twardy bezpiecznik: nie zaczynaj nowych zapytań pod koniec budżetu
+        return None
     h = {"User-Agent": UA, "Accept": "application/json"}
     if headers:
         h.update(headers)
     for attempt in range(retries):
+        if time_left() < 3:
+            return None
         if min_interval:
             with _lock:
-                wait = _last.get(host, 0) + min_interval - time.time()
-                if wait > 0:
-                    time.sleep(wait)
-                _last[host] = time.time()
+                slot = max(time.time(), _last.get(host, 0) + min_interval)
+                _last[host] = slot
+            wait = slot - time.time()
+            if wait > 0:
+                time.sleep(wait)
         try:
             req = urllib.request.Request(url, headers=h, data=data)
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -78,7 +83,9 @@ def http_json(url, headers=None, min_interval=0.0, retries=4, data=None, timeout
             if e.code == 404:
                 return None
             if e.code in (429, 500, 502, 503, 504):
-                time.sleep(2 * (attempt + 1) + (int(e.headers.get("Retry-After", "0") or 0)))
+                if e.code == 429:
+                    STATUS.setdefault("rate_limited", {})[host] = STATUS.get("rate_limited", {}).get(host, 0) + 1
+                time.sleep(min(20, 2 * (attempt + 1) + (int(e.headers.get("Retry-After", "0") or 0))))
                 continue
             log("HTTP", e.code, url[:120])
             return None
@@ -143,7 +150,7 @@ def fw_info(fid):
     return None
 
 def fw_rating(fid):
-    for p in (f"/film/{fid}/rating", f"/title/{fid}/rating"):
+    for p in (f"/film/{fid}/rating",):
         r = fw_get(p)
         if r and (r.get("rate") or r.get("count")):
             return r
@@ -532,12 +539,13 @@ def main():
     def get_fwr(f):
         r = fw_rating(f)
         return f, ({"r": round(r.get("rate", 0), 1), "n": r.get("count", 0), "_ts": NOW} if r else {"_ts": NOW})
-    for i in range(0, len(fw_todo), 300):
+    for i in range(0, len(fw_todo), 100):
         if time_left() < 8:
             log("Filmweb: koniec budżetu czasu – reszta w kolejnym przebiegu")
             break
-        for f, v in pmap(get_fwr, fw_todo[i:i + 300], 4):
-            fwr[f] = v
+        for f, v in pmap(get_fwr, fw_todo[i:i + 100], 4):
+            if v.get("r") or time_left() > 3:   # nie zapisuj pustych wyników z odcięcia budżetu
+                fwr[f] = v
 
     # 7. OMDb (RT, Metacritic) – limit dzienny
     if OMDB_KEY and time_left() > 4:
