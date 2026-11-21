@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kinoteka">
+<title>Kinoteka</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+</head>
+<body>
+<header class="top">
+  <h1 id="title">Dla Ciebie</h1>
+  <button id="filterBtn" class="icon-btn" aria-label="Filtry">
+    <svg viewBox="0 0 24 24"><path d="M3 5h18M6 12h12M10 19h4"/></svg><span id="filterCount" class="dot" hidden></span>
+  </button>
+</header>
+
+<div id="searchBar" class="search" hidden>
+  <input id="q" type="search" placeholder="Szukaj tytułu, reżysera, aktora…" autocomplete="off">
+</div>
+<div id="chips" class="chips"></div>
+
+<main id="view"><div class="loading">Wczytuję katalog…</div></main>
+
+<nav class="tabs">
+  <button data-tab="rec" class="on"><svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>Dla Ciebie</button>
+  <button data-tab="browse"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>Katalog</button>
+  <button data-tab="mine"><svg viewBox="0 0 24 24"><path d="M5 4h14v16l-7-4-7 4z"/></svg>Moje</button>
+  <button data-tab="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Trafność</button>
+</nav>
+
+<div id="sheet" class="sheet" hidden><div class="sheet-bg"></div><div class="sheet-body"></div></div>
+
+<script src="app.js?v=__BUILD__"></script>
+</body>
+</html>
