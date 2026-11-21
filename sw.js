@@ -1,4 +1,4 @@
-// Kinoteka – service worker: aplikacja działa offline, dane odświeżane z sieci.
+// Kinoteka – service worker: aplikacja działa offline, dane odświeżane z sieci (plakaty z cache).
 const V = 'kinoteka-__BUILD__';
 const SHELL = ['./', 'index.html', 'app.js?v=__BUILD__', 'style.css?v=__BUILD__', 'manifest.webmanifest', 'icons/icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
