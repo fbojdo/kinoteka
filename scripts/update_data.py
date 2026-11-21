@@ -22,7 +22,8 @@ DATA = os.path.join(ROOT, "data")
 STATE_PATH = os.path.join(ROOT, "state", "state.json.gz")
 
 TMDB_KEY = os.environ.get("TMDB_KEY", "").strip()
-OMDB_KEY = os.environ.get("OMDB_KEY", "").strip()
+_ok = re.findall(r"[A-Za-z0-9]{6,}", os.environ.get("OMDB_KEY", ""))
+OMDB_KEY = _ok[-1] if _ok else ""   # odporne na spacje / dopiski przy wklejaniu
 FW_USER = os.environ.get("FILMWEB_USER", "Bojryk").strip()
 FW_USER_ID = os.environ.get("FILMWEB_USER_ID", "2570815").strip()   # numer konta Filmweb (Bojryk)
 MIN_VOTES_MOVIE = int(os.environ.get("MIN_VOTES_MOVIE", "700"))
@@ -285,7 +286,7 @@ def wd_query(q):
     data = urllib.parse.urlencode({"query": q, "format": "json"}).encode()
     r = http_json(WD, {"Accept": "application/sparql-results+json",
                        "Content-Type": "application/x-www-form-urlencoded"}, min_interval=1.0, data=data,
-                  retries=2, timeout=55)
+                  retries=2, timeout=65)
     if r is None:
         return None   # błąd/timeout – nie oznaczaj tytułów jako sprawdzonych
     return r.get("results", {}).get("bindings", [])
@@ -297,44 +298,59 @@ def classify_award(label):
     return None
 
 def wikidata_enrich(imdb_ids):
-    """Zwraca {imdb: {"fw": filmwebId, "win": [...], "nom": [...], "wl": [etykiety wygranych]}}"""
-    out = {}
+    """Zwraca {imdb: {"fw": filmwebId, "win": [...], "nom": [...], "wl": [...]}} – dwa lekkie zapytania na porcję."""
+    out, award_rows, labels = {}, [], st_award_labels()
     ids = sorted(set(i for i in imdb_ids if i))
-    for i in range(0, len(ids), 120):
+    for i in range(0, len(ids), 80):
         if time_left() < 12:
             log("Wikidata: koniec budżetu czasu – reszta w kolejnym przebiegu")
             break
-        chunk = ids[i:i + 120]
+        chunk = ids[i:i + 80]
         vals = " ".join('"%s"' % x for x in chunk)
-        q = f"""SELECT ?imdb ?fw ?rel ?awLabel WHERE {{
+        q = f"""SELECT ?imdb ?fw ?rel ?aw WHERE {{
   VALUES ?imdb {{ {vals} }}
   ?item wdt:P345 ?imdb .
   OPTIONAL {{ ?item wdt:P5032 ?fw . }}
-  OPTIONAL {{ {{ ?item wdt:P166 ?aw . BIND("w" AS ?rel) }} UNION {{ ?item wdt:P1411 ?aw . BIND("n" AS ?rel) }}
-             ?aw rdfs:label ?awLabel . FILTER(LANG(?awLabel) = "en") }}
+  OPTIONAL {{ {{ ?item wdt:P166 ?aw . BIND("w" AS ?rel) }} UNION {{ ?item wdt:P1411 ?aw . BIND("n" AS ?rel) }} }}
 }}"""
         bindings = wd_query(q)
         if bindings is None:
             continue
-        for b in bindings:
-            im = b["imdb"]["value"]
-            e = out.setdefault(im, {"fw": None, "win": set(), "nom": set(), "wl": set()})
-            if "fw" in b:
-                e["fw"] = b["fw"]["value"]
-            if "awLabel" in b:
-                code = classify_award(b["awLabel"]["value"])
-                if code:
-                    (e["win"] if b["rel"]["value"] == "w" else e["nom"]).add(code)
-                    if b["rel"]["value"] == "w" and code in ("oscar", "cannes", "venice", "berlin", "globe", "emmy", "bafta"):
-                        e["wl"].add(b["awLabel"]["value"])
         for x in chunk:
             out.setdefault(x, {"fw": None, "win": set(), "nom": set(), "wl": set()})
-        if i % 1200 == 0:
+        for bd in bindings:
+            im = bd["imdb"]["value"]
+            if "fw" in bd:
+                out[im]["fw"] = bd["fw"]["value"]
+            if "aw" in bd:
+                award_rows.append((im, bd["rel"]["value"], bd["aw"]["value"].rsplit("/", 1)[-1]))
+        if i % 800 == 0:
             log(f"Wikidata: {i + len(chunk)}/{len(ids)}")
+    # etykiety nagród – tylko nowe identyfikatory, porcjami
+    need = sorted({q for _, _, q in award_rows if q not in labels})
+    for i in range(0, len(need), 150):
+        if time_left() < 8:
+            break
+        vals = " ".join("wd:" + q for q in need[i:i + 150])
+        bs = wd_query(f'SELECT ?aw ?l WHERE {{ VALUES ?aw {{ {vals} }} ?aw rdfs:label ?l . FILTER(LANG(?l)="en") }}')
+        for bd in bs or []:
+            labels[bd["aw"]["value"].rsplit("/", 1)[-1]] = bd["l"]["value"]
+    for im, rel, qid in award_rows:
+        lab = labels.get(qid)
+        code = classify_award(lab) if lab else None
+        if code:
+            e = out[im]
+            (e["win"] if rel == "w" else e["nom"]).add(code)
+            if rel == "w" and code in ("oscar", "cannes", "venice", "berlin", "globe", "emmy", "bafta"):
+                e["wl"].add(lab)
     for e in out.values():
         e["nom"] -= e["win"]
         e["win"], e["nom"], e["wl"] = sorted(e["win"]), sorted(e["nom"]), sorted(e["wl"])[:6]
     return out
+
+_AWARD_LABELS = {}
+def st_award_labels():
+    return _AWARD_LABELS
 
 def wikidata_imdb_for_filmweb(fw_ids):
     out = {}
@@ -388,6 +404,7 @@ def main():
     om = st.setdefault("omdb", {})                # imdb -> {...}
     wd = st.setdefault("wd", {})                  # imdb -> wikidata
     PROVIDERS.update(st.get("providers", {})); KEYWORDS.update(st.get("keywords", {})); GENRES.update(st.get("genres", {}))
+    _AWARD_LABELS.update(st.get("award_labels", {}))
 
     # 0. Test kluczy
     cfg = tm("/configuration")
@@ -403,6 +420,15 @@ def main():
     fw_counts = {}
     for typ in ("film", "serial"):
         lst = fw_user_list("votes", typ)
+        seen_ids = {x[0] for x in lst}
+        top = fw_get(f"/user/{urllib.parse.quote(FW_USER)}/vote/{typ}/top") or []
+        for it in top:   # druga lista (najwyżej oceniane) – Filmweb nie oddaje dalszych stron bez logowania
+            if isinstance(it, list) and it and it[0] not in seen_ids:
+                lst.append((it[0], it[1] if len(it) > 1 else None)); seen_ids.add(it[0])
+        for key in list(votes_cache):   # oceny znalezione w poprzednich przebiegach zostają
+            t_, fid_ = key.split(":")
+            if t_ == typ and int(fid_) not in seen_ids and votes_cache[key].get("r"):
+                lst.append((int(fid_), votes_cache[key].get("ts"))); seen_ids.add(int(fid_))
         fw_counts["votes/" + typ] = len(lst)
         def get_vote(it, typ=typ):
             fid, ts = it[0], it[1]
@@ -605,6 +631,7 @@ def main():
     for s, v in overviews.items():
         write_json(f"ov/{s}.json", v)
     st["providers"], st["keywords"], st["genres"], st["me"] = PROVIDERS, KEYWORDS, GENRES, me
+    st["award_labels"] = _AWARD_LABELS
     save_state(st)
     log(f"Gotowe: katalog {len(catalog)}, ocen {len(me['ratings'])}, chcę zobaczyć {len(me['want'])}")
 
