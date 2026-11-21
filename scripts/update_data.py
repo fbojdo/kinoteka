@@ -488,6 +488,22 @@ def main():
         st["imdb"] = {k: v for k, v in imdb.items() if k in set(imdbs)}
     imdb = st.get("imdb", {})
 
+    # 4b. Gust podobnych widzów (MovieLens) – przeliczany co noc, bo zmieniają się Twoje oceny
+    if time_left() > 35:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from movielens import compute_cf
+            my = {int(r["id"][1:]): r["r"] for r in me["ratings"] if r.get("id", "").startswith("m") and r.get("r")}
+            cat_m = {int(k[1:]) for k in keys if k.startswith("m")}
+            cf = compute_cf(os.path.join(ROOT, "ml"), my, cat_m)
+            if cf:
+                st["cf"] = {str(k): v for k, v in cf.items()}
+            STATUS["movielens"] = {"titles": len(cf), "my_matched": len(my)}
+        except Exception as e:
+            log("MovieLens: błąd", e)
+            STATUS["notes"].append(f"MovieLens: {type(e).__name__}: {str(e)[:120]}")
+    cfmap = st.get("cf", {})
+
     # 5. Wikidata (nagrody + id Filmwebu) – dla nowych i co 30 dni
     stale = [i for i in imdbs if i not in wd or NOW - wd[i].get("_ts", 0) > 30 * 86400]
     log("Wikidata do odświeżenia:", len(stale))
@@ -556,6 +572,8 @@ def main():
         if w.get("nom"): o["an"] = w["nom"]
         if w.get("wl"): o["awl"] = w["wl"]
         if im and om.get(im, {}).get("awt"): o["awt"] = om[im]["awt"]
+        if k.startswith("m") and k[1:] in cfmap:
+            o["cf"], o["cfs"] = cfmap[k[1:]]
         catalog.append(o)
         overviews.setdefault(str(hash_shard(k)), {})[k] = t.get("ov", "")
     used_kw = {str(x) for o in catalog for x in o.get("k", [])}

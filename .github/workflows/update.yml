@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore: ["state/**"]
+    paths-ignore: ["state/**", "README.md"]
 
 permissions:
   contents: read
@@ -34,6 +34,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Biblioteki obliczeniowe
+        run: pip install numpy pandas scipy
+
+      - name: Dane MovieLens (cache)
+        uses: actions/cache@v4
+        with:
+          path: ml
+          key: movielens-ml-32m
 
       - name: Pobierz dane (Filmweb, TMDB, IMDb, OMDb, Wikidata)
         timeout-minutes: 95
