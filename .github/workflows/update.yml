@@ -28,8 +28,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: state
-          key: kinoteka-state-${{ github.run_id }}
-          restore-keys: kinoteka-state-
+          key: kinoteka-st2-${{ github.run_id }}
+          restore-keys: |
+            kinoteka-st2-
+            kinoteka-state-44999661756
 
       - uses: actions/setup-python@v5
         with:
@@ -60,7 +62,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: state
-          key: kinoteka-state-${{ github.run_id }}
+          key: kinoteka-st2-${{ github.run_id }}
 
       - name: Złóż stronę
         run: |

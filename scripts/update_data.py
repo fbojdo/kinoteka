@@ -104,18 +104,28 @@ def pmap(fn, items, workers=8):
 # ---------------------------------------------------------------- state
 def load_state():
     if os.path.exists(STATE_PATH):
-        with gzip.open(STATE_PATH, "rt", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with gzip.open(STATE_PATH, "rt", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print("Uszkodzony stan – zaczynam od zera:", e, flush=True)
     return {}
+
+def _jsonable(o):   # typy numpy z MovieLens
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(type(o).__name__)
 
 def save_state(st):
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    with gzip.open(STATE_PATH, "wt", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, separators=(",", ":"))
+    tmp = STATE_PATH + ".tmp"
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:   # zapis atomowy: błąd nie niszczy poprzedniego stanu
+        json.dump(st, f, ensure_ascii=False, separators=(",", ":"), default=_jsonable)
+    os.replace(tmp, STATE_PATH)
 
 def write_json(name, obj):
     with open(os.path.join(DATA, name), "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"), default=_jsonable)
 
 # ---------------------------------------------------------------- Filmweb
 FW = "https://www.filmweb.pl/api/v1"

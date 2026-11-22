@@ -113,9 +113,9 @@ def compute_cf(ml_dir, my_ratings, catalog_tmdb, max_users=90000, k=40, shrink=6
                 twins += 1
                 if int(t) in out:
                     cf, cs = out[int(t)]
-                    out[int(t)] = (round(0.6 * cf + 0.4 * ub, 2), round(cs + 0.3 * cnt[col], 2))
+                    out[int(t)] = (round(0.6 * cf + 0.4 * ub, 2), round(float(cs) + 0.3 * float(cnt[col]), 2))
                 else:
-                    out[int(t)] = (round(ub, 2), round(0.3 * cnt[col], 2))
+                    out[int(t)] = (round(ub, 2), round(0.3 * float(cnt[col]), 2))
             _log(f"bliźniacy: {len(top)} widzów, filmów z ich sygnałem: {twins}")
     except Exception as e:  # nie psuj całości
         _log("bliźniacy: błąd", e)
