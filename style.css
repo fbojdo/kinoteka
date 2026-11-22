@@ -209,3 +209,9 @@ table.mini td+td{text-align:right;white-space:nowrap;color:var(--tx2)}
 .duel:active .poster{transform:scale(.97)}
 
 .surp{margin-top:12px;display:grid;gap:8px}.surp span{font-size:14px;color:var(--tx2)}
+
+#title.brand{line-height:1}
+.logo{display:block;font:300 40px/1 var(--sfd);letter-spacing:6px;color:var(--tx)}
+.logo b{font-weight:800;letter-spacing:6px}
+.logo-sub{display:block;margin-top:8px;font:italic 500 15px var(--sf);letter-spacing:.3px;color:var(--tx2)}
+.logo-sub::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#ff3b30;margin:0 8px 2px 1px;vertical-align:middle}

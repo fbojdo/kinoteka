@@ -756,7 +756,10 @@ function search(q) {
 /* ================================================================== WIDOKI */
 function render() {
   const titles = { rec: 'Dla Ciebie', browse: 'Katalog', mine: 'Moje', profile: 'Profil', stats: 'Trafność' };
-  $('#title').innerHTML = (S.tab === 'rec' ? `<span class="eyebrow-date">${new Date().toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' })}</span>` : '') + titles[S.tab];
+  $('#title').innerHTML = S.tab === 'rec'
+    ? `<span class="logo" aria-label="Kinoman"><b>KINO</b>MAN</span><span class="logo-sub">Fryderyk’s Cut</span>`
+    : titles[S.tab];
+  $('#title').classList.toggle('brand', S.tab === 'rec');
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   $('#searchBar').hidden = S.tab !== 'browse';
   $('#filterBtn').hidden = !(S.tab === 'rec' || S.tab === 'browse');

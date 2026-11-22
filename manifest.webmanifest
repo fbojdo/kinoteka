@@ -1,6 +1,6 @@
 {
-  "name": "Kinoteka",
-  "short_name": "Kinoteka",
+  "name": "Kinoman",
+  "short_name": "Kinoman",
   "description": "Filmy i seriale: oceny z Filmwebu, IMDb, RT i Metacritic oraz rekomendacje dopasowane do Ciebie.",
   "lang": "pl",
   "start_url": "./",
