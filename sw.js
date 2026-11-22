@@ -21,5 +21,7 @@ self.addEventListener('fetch', e => {
       .catch(() => caches.match(e.request)));
     return;
   }
-  e.respondWith(caches.match(e.request).then(h => h || fetch(e.request)));
+  // aplikacja: najpierw sieć (zawsze najnowsza wersja), bez sieci – z cache
+  e.respondWith(fetch(e.request).then(r => { if (r.ok) { const cl = r.clone(); caches.open(V).then(c => c.put(e.request, cl)); } return r; })
+    .catch(() => caches.match(e.request, { ignoreSearch: true })));
 });
