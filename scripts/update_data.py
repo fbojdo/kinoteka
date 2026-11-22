@@ -535,7 +535,7 @@ def main():
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from movielens import compute_cf
-            my = {int(r["id"][1:]): r["r"] for r in me["ratings"] if r.get("id", "").startswith("m") and r.get("r")}
+            my = {int(r["id"][1:]): r["r"] for r in me["ratings"] if (r.get("id") or "").startswith("m") and r.get("r")}
             cat_m = {int(k[1:]) for k in keys if k.startswith("m")}
             cf = compute_cf(os.path.join(ROOT, "ml"), my, cat_m)
             if cf:
