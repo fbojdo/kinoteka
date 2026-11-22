@@ -88,5 +88,36 @@ def compute_cf(ml_dir, my_ratings, catalog_tmdb, max_users=90000, k=40, shrink=6
             continue
         cf = float((w * my_c[top]).sum() / (tot + 0.5)) * 2   # z powrotem na skalę 1–10
         out[int(t)] = (round(cf, 2), round(float(tot), 2))
+    # „Bliźniacy”: widzowie MovieLens najbardziej podobni do Ciebie (user-user)
+    try:
+        Xr_s, Br_s = X[ri], B[ri]
+        dotu = np.asarray(Xr_s.T @ my_c).ravel()                       # Σ r_ui * moje_i
+        nu = np.asarray(Br_s.sum(axis=0)).ravel()                     # liczba wspólnych filmów
+        xn = np.sqrt(np.asarray(Xr_s.multiply(Xr_s).sum(axis=0)).ravel()) + 1e-6
+        mn = np.sqrt(np.asarray(Br_s.T @ (my_c ** 2)).ravel()) + 1e-6
+        simu = dotu / (xn * mn) * (nu / (nu + 12.0))
+        simu[nu < 8] = 0
+        top = np.argsort(-simu)[:80]
+        top = top[simu[top] > 0.05]
+        if len(top) >= 10:
+            w = simu[top].astype("float32")
+            Xt, Bt = X[:, top], B[:, top]
+            num = np.asarray(Xt @ w).ravel()
+            den = np.asarray(Bt @ w).ravel()
+            cnt = np.asarray(Bt.sum(axis=1)).ravel()
+            twins = 0
+            for col, t in enumerate(items):
+                if cnt[col] < 3 or (t not in catalog_tmdb and t not in my_ratings):
+                    continue
+                ub = float(num[col] / (den[col] + 0.5)) * 2
+                twins += 1
+                if int(t) in out:
+                    cf, cs = out[int(t)]
+                    out[int(t)] = (round(0.6 * cf + 0.4 * ub, 2), round(cs + 0.3 * cnt[col], 2))
+                else:
+                    out[int(t)] = (round(ub, 2), round(0.3 * cnt[col], 2))
+            _log(f"bliźniacy: {len(top)} widzów, filmów z ich sygnałem: {twins}")
+    except Exception as e:  # nie psuj całości
+        _log("bliźniacy: błąd", e)
     _log("gotowe, filmów z sygnałem:", len(out))
     return out

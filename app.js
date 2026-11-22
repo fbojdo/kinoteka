@@ -4,9 +4,14 @@
 const IMG = 'https://image.tmdb.org/t/p/';
 const LS_KEY = 'kinoteka.v1';
 const AWARDS = {
-  oscar: 'Oscar', globe: 'Złoty Glob', bafta: 'BAFTA', cannes: 'Cannes', venice: 'Wenecja', berlin: 'Berlinale',
-  emmy: 'Emmy', cesar: 'César', goya: 'Goya', orzel: 'Orły', gdynia: 'Gdynia', sag: 'SAG', ind: 'Spirit', sundance: 'Sundance'
+  oscar: 'Oscar', oscar_bp: 'Oscar – najlepszy film', oscar_intl: 'Oscar – film międzynarodowy', globe: 'Złoty Glob', bafta: 'BAFTA',
+  cannes: 'Cannes', palme: 'Złota Palma', venice: 'Wenecja', lion: 'Złoty Lew', berlin: 'Berlinale', bear: 'Złoty Niedźwiedź',
+  efa: 'Europejska Nagroda Filmowa', emmy: 'Emmy', cesar: 'César', goya: 'Goya', orzel: 'Orły', gdynia: 'Gdynia (Złote Lwy)',
+  sag: 'SAG', ind: 'Independent Spirit', sundance: 'Sundance', tiff: 'Toronto (TIFF)', kv: 'Karlowe Wary', sansebastian: 'San Sebastián',
+  critics: 'Critics’ Choice', annie: 'Annie'
 };
+const FESTIVALS = [['oscar', 'oscar_bp', 'oscar_intl'], ['cannes', 'palme'], ['venice', 'lion'], ['berlin', 'bear'], ['globe'], ['bafta'], ['efa'],
+  ['gdynia'], ['orzel'], ['cesar'], ['goya'], ['sundance'], ['tiff'], ['kv'], ['sansebastian'], ['emmy'], ['sag'], ['critics'], ['ind'], ['annie']];
 const COUNTRY = { PL: 'Polska', US: 'USA', GB: 'Wielka Brytania', FR: 'Francja', DE: 'Niemcy', IT: 'Włochy', ES: 'Hiszpania',
   JP: 'Japonia', KR: 'Korea Płd.', SE: 'Szwecja', DK: 'Dania', NO: 'Norwegia', CA: 'Kanada', AU: 'Australia', IE: 'Irlandia',
   BE: 'Belgia', MX: 'Meksyk', IN: 'Indie', CN: 'Chiny', HK: 'Hongkong', IR: 'Iran', AR: 'Argentyna', BR: 'Brazylia', NZ: 'Nowa Zelandia',
@@ -22,13 +27,14 @@ const S = {
   f: null,
 };
 const DEFAULT_F = () => ({
-  type: 'all', mood: 'any', period: 'any', lenB: 'any', themes: [], sure: false, mini: false, genres: [], regions: [], yFrom: 1920, yTo: 2030, rtMax: 0, provs: [], onlySubs: false, awards: [], awardMode: 'win',
+  type: 'all', awSel: {}, moods: [], periods: [], lens: [], themes: [], sure: false, mini: false, crit: [], critRec: false, minCra: 0, genres: [], regions: [], yFrom: 1920, yTo: 2030, rtMax: 0, provs: [], onlySubs: false, awards: [], awardMode: 'win',
   minFw: 0, minImdb: 0, minRt: 0, minMc: 0, minVotes: 0, country: '', hideSeen: true, sort: 'match'
 });
 
 function loadLocal() {
   try { Object.assign(S.local, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); } catch (e) { /* tryb prywatny */ }
   S.f = Object.assign(DEFAULT_F(), S.local.filters || {});
+  for (const k of ['moods', 'periods', 'lens', 'themes', 'crit', 'regions', 'provs', 'genres', 'awards']) if (!Array.isArray(S.f[k])) S.f[k] = [];
 }
 let saveT;
 function saveLocal() {
@@ -60,6 +66,7 @@ async function load() {
   try {
     const [cat, meta, me] = await Promise.all([getJSON('data/catalog.json'), getJSON('data/meta.json'), getJSON('data/me.json')]);
     S.cat = cat; S.meta = meta; S.me = me;
+    try { S.critics = await getJSON('data/critics.json'); } catch (e) { S.critics = []; }
   } catch (e) {
     $('#view').innerHTML = `<div class="empty">Brak danych katalogu.<br><small>Pierwsza aktualizacja w GitHub Actions jeszcze się nie zakończyła albo brakuje klucza TMDB.</small></div>`;
     return;
@@ -204,13 +211,17 @@ function dense(t) {
     yr, typ(t) === 't' ? 1 : 0, t.len ? Math.min(3, t.len / 60) - 1.8 : 0,
     (t.aw || []).length ? 1 : 0,
     t.cf != null ? t.cf * cfw : 0, t.cf != null ? cfw : 0,
+    zr != null ? zr - (zi ?? q) : 0, zm != null ? zm - (zi ?? q) : 0,    // krytycy vs publiczność
+    heavinessRaw(t),
+    critSignal(t) ?? 0, t.cra ? (t.cra - 6.5) / 1.2 : 0,
   ];
   return t._d;
 }
 
 /* Deklaracje użytkownika -> pseudo-obserwacje na cechach */
 function declPriors() {
-  const out = new Map();   // klucz cechy (z prefiksem typu lub bez) -> [suma, liczba]
+  const out = new Map();
+  rejectPriors(out);   // klucz cechy (z prefiksem typu lub bez) -> [suma, liczba]
   const d = S.local.decl || {};
   for (const [key, v] of Object.entries(d)) {   // key: "m|rEU" / "t|hpolitics" / "*|g18"
     if (!v) continue;
@@ -321,10 +332,10 @@ function recencyW(date) {
 
 /** Prawdziwe oceny (opcjonalnie tylko sprzed daty) */
 function trainingSamples(beforeDate) {
-  const out = [];
+  const out = [], adj = duelAdjust();
   for (const [id, r] of S.myRatings) {
     const t = S.byId.get(id);
-    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r, date: r.date, id, w: recencyW(r.date) });
+    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r + (adj[id] || 0), date: r.date, id, w: recencyW(r.date) });
   }
   return out;
 }
@@ -332,7 +343,12 @@ function trainingSamples(beforeDate) {
 function weakSamples(mu) {
   const out = [];
   for (const id of S.want || []) { const t = S.byId.get(id); if (t && !S.myRatings.has(id)) out.push({ t, r: mu + .9, w: .25, id, real: false }); }
-  for (const id of Object.keys(S.local.hidden || {})) { const t = S.byId.get(id); if (t && S.local.hidden[id] && !S.myRatings.has(id)) out.push({ t, r: mu - 2.2, w: .45, id, real: false }); }
+  const RW = { heavy: .5, light: .5, theme: .55, creator: .55, genre: .55, later: .1 };
+  for (const id of Object.keys(S.local.hidden || {})) {
+    const t = S.byId.get(id); if (!t || !S.local.hidden[id] || S.myRatings.has(id)) continue;
+    const why = (S.local.rejects || {})[id];
+    out.push({ t, r: mu - 2.2, w: why ? RW[why] ?? .45 : .45, id, real: false });
+  }
   return out;
 }
 
@@ -459,6 +475,8 @@ function featLabel(f) {
 function explain(t, max = 3) {
   const g = S.reasons.get(t.id); if (!g || !S.model) return [];
   const out = [];
+  const cs = critSignal(t);
+  if (cs != null && cs >= .5) { const best = t.ctop.slice().sort((a, b) => b[1] - a[1])[0]; out.push(`Twoi krytycy go cenią – ${S.critics[best[0]]?.name || ''} ${best[1]}/10`); }
   if (t.cf != null && t.cfs > 1 && t.cf > .35) out.push('Widzowie o guście podobnym do Twojego oceniają go wysoko');
   if (g.sims.length) {
     const names = g.sims.filter(([s]) => s > .15).slice(0, 2).map(([, i]) => {
@@ -621,6 +639,8 @@ function viewProfile() {
   <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
   <div class="section-h">Tematy, do których wracasz</div>
   <div class="f-chips">${topThemes.map(([f, n]) => `<span class="chip">${esc(THEME_NAMES[f.slice(1)] || f)} · ${n}</span>`).join('')}</div>
+  ${(S.critics || []).length ? `<div class="section-h">Twoi krytycy</div><div class="note">Krytycy Filmwebu, których oceny są najbliższe Twoim (wspólne filmy · zgodność w granicy 1 pkt).</div>
+    <table class="mini">${S.critics.map((c, i) => `<tr><td><b>${i + 1}. ${esc(c.name)}</b><br><small style="color:var(--tx2)">${esc(c.pub || '')}</small></td><td>${c.n} wsp.</td><td>${Math.round(c.agree * 100)}%</td></tr>`).join('')}</table>` : ''}
   ${P.dirs.length ? `<div class="section-h">Twoi twórcy</div><table class="mini">${P.dirs.slice(0, 8).map(x => `<tr><td>${esc(x.d)}</td><td>${x.n} tyt.</td><td>śr. ${fmt(x.avg)}</td></tr>`).join('')}</table>` : ''}
   <div class="section-h">Twój kanon</div>
   ${list(P.canon.map(x => x.t), 'mine')}
@@ -635,6 +655,7 @@ const G_LIGHT = { 35: 1, 10751: 1, 16: .8, 10402: .7, 10749: .5, 12: .5, 14: .3,
 const G_HEAVY = { 10752: 1, 18: .6, 36: .6, 80: .45, 53: .5, 27: .4, 99: .35, 9648: .3, 10768: .8 };
 const H_HEAVY = { war: 1, psyche: .7, society: .6, faith: .4, truth: .4, politics: .5, law: .3, medicine: .4, crime: .3, history: .3 };
 const H_LIGHT = { love: .5, satire: .3, sport: .3, adventure: .3, art: .2, youth: .2 };
+function heavinessRaw(t) { return heaviness(t); }
 function heaviness(t) {   // ~ -1 (lekko) … +1 (ciężko)
   if (t._hv != null) return t._hv;
   let l = 0, h = 0;
@@ -656,6 +677,12 @@ function inLen(t, b) {
   if (b === 'mid') return tv ? L > 30 && L <= 55 : L > 100 && L <= 130;
   return tv ? L > 55 : L > 130;
 }
+function critSignal(t) {   // ważone odchylenie ocen „Twoich” krytyków od ich średniej
+  if (!t.ctop || !(S.critics || []).length) return null;
+  let num = 0, den = 0;
+  for (const [i, v] of t.ctop) { const c = S.critics[i]; if (!c) continue; num += c.score * (v - c.mean); den += c.score; }
+  return den ? num / (den + .3) : null;
+}
 function isSure(t) { const p = S.preds.get(t.id) || 0, u = (S.unc && S.unc.get(t.id)) || 9; return p - .5 * u >= 7.6; }
 
 /* ================================================================== FILTRY */
@@ -663,9 +690,12 @@ function passes(t, f, ignoreSeen) {
   if (f.type === 'movie' && t.id[0] !== 'm') return false;
   if (f.type === 'tv' && t.id[0] !== 't') return false;
   if (f.genres.length && !f.genres.every(g => (t.g || []).includes(+g))) return false;
-  if (f.mood && f.mood !== 'any') { const hv = heaviness(t); if (f.mood === 'light' && hv > -.15) return false; if (f.mood === 'heavy' && hv < .25) return false; if (f.mood === 'mid' && (hv < -.35 || hv > .45)) return false; }
-  if (f.period && f.period !== 'any' && !inPeriod(t, f.period)) return false;
-  if (f.lenB && f.lenB !== 'any' && !inLen(t, f.lenB)) return false;
+  if (f.moods.length) { const hv = heaviness(t); if (!f.moods.some(m => (m === 'light' && hv <= -.15) || (m === 'heavy' && hv >= .25) || (m === 'mid' && hv > -.35 && hv < .45))) return false; }
+  if (f.periods.length && !f.periods.some(p => inPeriod(t, p))) return false;
+  if (f.lens.length && !f.lens.some(b => inLen(t, b))) return false;
+  if (f.crit.length && !f.crit.some(i => (t.ctop || []).some(([r, v]) => r === +i && v >= 7))) return false;
+  if (f.critRec && !(critSignal(t) >= .5)) return false;
+  if (f.minCra && !(t.cra >= f.minCra)) return false;
   if (f.themes && f.themes.length) { const fs = feats(t); if (!f.themes.some(h => fs.includes('h' + h))) return false; }
   if (f.mini && !(typ(t) === 't' && (t.seasons || 0) <= 1)) return false;
   if (f.sure && !isSure(t)) return false;
@@ -675,6 +705,8 @@ function passes(t, f, ignoreSeen) {
   const pv = t.pv || {};
   const provSel = f.onlySubs ? S.local.subs : f.provs;
   if (provSel.length && !provSel.some(p => pv[p] && 'sfa'.includes(pv[p]))) return false;
+  const sel = Object.entries(f.awSel || {});
+  if (sel.length && !sel.some(([code, mode]) => mode === 'win' ? (t.aw || []).includes(code) : mode === 'nom' ? (t.an || []).includes(code) : ((t.aw || []).includes(code) || (t.an || []).includes(code)))) return false;
   if (f.awards.length) {
     const pool = f.awardMode === 'win' ? (t.aw || []) : [...(t.aw || []), ...(t.an || [])];
     if (!f.awards.some(a => pool.includes(a))) return false;
@@ -706,6 +738,7 @@ function sortFn(sort) {
     imdb: (a, b) => (b.ir || 0) - (a.ir || 0),
     rt: (a, b) => (b.rt ?? -1) - (a.rt ?? -1),
     mc: (a, b) => (b.mc ?? -1) - (a.mc ?? -1),
+    cra: (a, b) => (b.cra || 0) - (a.cra || 0),
     new: (a, b) => (b.y || 0) - (a.y || 0),
     pop: (a, b) => (b.pop || 0) - (a.pop || 0),
     votes: (a, b) => (b.iv || b.tv || 0) - (a.iv || a.tv || 0),
@@ -737,8 +770,8 @@ function renderChips() {
   const f = S.f;
   const chips = [
     ['type:all', 'Wszystko', f.type === 'all'], ['type:movie', 'Filmy', f.type === 'movie'], ['type:tv', 'Seriale', f.type === 'tv'],
-    ['mood:light', '☀︎ Lekko', f.mood === 'light'], ['mood:heavy', '◐ Na poważnie', f.mood === 'heavy'],
-    ['period:new', 'Nowości', f.period === 'new'], ['sure', '★ Pewniaki', f.sure], ['len:short', 'Krótko', f.lenB === 'short'],
+    ['moods:light', '☀︎ Lekko', f.moods.includes('light')], ['moods:heavy', '◐ Na poważnie', f.moods.includes('heavy')],
+    ['periods:new', 'Nowości', f.periods.includes('new')], ['sure', '★ Pewniaki', f.sure], ['critRec', '✎ Twoi krytycy polecają', f.critRec], ['lens:short', 'Krótko', f.lens.includes('short')],
   ];
   if (S.local.subs.length) chips.push(['subs', 'Moje serwisy', f.onlySubs]);
   chips.push(['eu', 'Europejskie', (f.regions || []).includes('eu')], ['pl', 'Polskie', f.country === 'PL'], ['aw:oscar', 'Oscary', f.awards.includes('oscar')]);
@@ -809,10 +842,14 @@ function viewRec() {
     const pick = (arr, n) => { const out = []; for (const t of arr) { if (out.length >= n) break; if (!used.has(t.id)) { out.push(t); used.add(t.id); } } return out; };
     const top = pick(items.filter(t => t.p || t.bd), 1)[0];
     if (top) html += hero(top);
+    const rem = reminders();
+    if (rem.length) html += `<div class="section-h">Obejrzałeś?</div><div class="list">${rem.map(t => `<div class="card"><div class="poster" ${t.p ? `style="background-image:url('${IMG}w185${t.p}')"` : ''}></div><div class="info"><div class="ttl">${esc(t.t)}</div><div class="sub">Oglądałeś szczegóły niedawno – oceń, a model się poprawi</div><div class="btn-row" style="margin-top:6px"><button class="btn gold" data-remind="${t.id}" style="min-width:0;padding:8px">Oceń</button><button class="btn" data-remindx="${t.id}" style="min-width:0;padding:8px">Nie oglądałem</button></div></div></div>`).join('')}</div>`;
     html += `<button class="quick" data-quick><i>⚡︎</i><div><b>Szybkie dopasowanie</b><span>10 pytań, które najbardziej wyostrzą rekomendacje</span></div></button>`;
+    html += `<button class="quick" data-duelskip style="margin-top:8px"><i style="background:linear-gradient(135deg,#ff9f0a,#ff375f)">⚔︎</i><div><b>Pojedynki</b><span>Który z dwóch filmów był lepszy? Rozróżnia tytuły o tej samej ocenie</span></div></button>`;
     const mineSubs = S.local.subs.length ? items.filter(t => S.local.subs.some(p => (t.pv || {})[p] && 'sfa'.includes(t.pv[p]))) : [];
     html += shelf('Na Twoich serwisach', pick(mineSubs, 12));
     html += shelf('Z Twojej listy „Chcę zobaczyć”', pick(items.filter(t => S.want.has(t.id)), 12));
+    html += shelf('Twoi krytycy polecają', pick(items.filter(t => critSignal(t) >= .5).sort((a, b) => critSignal(b) - critSignal(a)), 12));
     html += shelf('Filmy dla Ciebie', pick(items.filter(t => typ(t) === 'm'), 12));
     html += shelf('Seriale dla Ciebie', pick(items.filter(t => typ(t) === 't'), 12));
     html += shelf('Kino europejskie', pick(items.filter(t => ['eu', 'uk', 'pl'].includes(regionOf(t))), 12));
@@ -837,6 +874,10 @@ function viewMine() {
   const sub = S.mineTab || 'rated';
   let items, html = `<div class="chips" style="padding:0 0 10px">${[['rated', 'Ocenione'], ['want', 'Chcę zobaczyć'], ['hidden', 'Ukryte'], ['unmatched', 'Niedopasowane']]
     .map(([k, l]) => `<button class="chip${sub === k ? ' on' : ''}" data-mine="${k}">${l}</button>`).join('')}</div>`;
+  const tfw = toFilmweb();
+  if (tfw.length && sub === 'rated') html += `<div class="section-h">Do przepisania na Filmweb <small>${tfw.length}</small></div>
+    <div class="note">Oceny z aplikacji – wpisz je na Filmwebie, wtedy wejdą też do Twojego profilu tam.</div>
+    <table class="mini">${tfw.map(x => `<tr><td><a href="${x.t.fw ? `https://www.filmweb.pl/${typ(x.t) === 't' ? 'serial' : 'film'}/x-${x.t.y || 0}-${x.t.fw}` : `https://www.filmweb.pl/search#/?query=${encodeURIComponent(x.t.ot || x.t.t)}`}" target="_blank" rel="noopener" style="color:var(--tint);text-decoration:none">${esc(x.t.t)}</a></td><td><b>${x.r}</b></td><td><button class="linkbtn" data-fwdone="${x.t.id}">✓ wpisane</button></td></tr>`).join('')}</table><div class="section-h">Wszystkie oceny</div>`;
   if (sub === 'rated') {
     items = [...S.myRatings.entries()].filter(([id]) => S.byId.has(id)).sort((a, b) => (b[1].date || '').localeCompare(a[1].date || '')).map(([id]) => S.byId.get(id));
     const avg = items.length ? [...S.myRatings.values()].reduce((a, r) => a + r.r, 0) / S.myRatings.size : 0;
@@ -925,6 +966,7 @@ function settingsHTML() {
 /* ------------------------------------------------------------------ szczegóły */
 async function openDetail(id) {
   const t = S.byId.get(id); if (!t) return;
+  if (!S.myRatings.has(id)) { S.local.opened = S.local.opened || {}; if (!S.local.opened[id]) { S.local.opened[id] = new Date().toISOString(); saveLocal(); } }
   const p = S.preds.get(id), mine = S.myRatings.get(id);
   const reasons = mine ? [] : explain(t, 4);
   const pv = Object.entries(t.pv || {}).sort((a, b) => 'sfarb'.indexOf(a[1]) - 'sfarb'.indexOf(b[1]));
@@ -945,6 +987,7 @@ async function openDetail(id) {
     ${t.mc != null ? `<div class="d-sc"><span>Metacritic</span><b>${t.mc}</b></div>` : ''}
     ${t.tv ? `<div class="d-sc"><span>TMDB</span><b>${fmt(t.tr)}</b><small>${kfmt(t.tv)}</small></div>` : ''}
   </div>
+  ${(t.ctop || t.cra) ? `<div class="d-sec"><h3>Krytycy</h3><p>${t.cra ? `Średnia krytyków Filmwebu: <b>${fmt(t.cra)}</b> (${t.crn})<br>` : ''}${(t.ctop || []).map(([i, v]) => S.critics[i] ? `${esc(S.critics[i].name)} <b>${v}</b>` : '').filter(Boolean).join(' · ')}${t.ctop ? `<br><small style="color:var(--tx2)">Twoi krytycy – oceniają najbardziej podobnie do Ciebie</small>` : ''}</p></div>` : ''}
   ${reasons.length ? `<div class="d-sec"><h3>Dlaczego dla Ciebie</h3><ul class="reasons">${reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
   <div class="d-sec"><h3>Opis</h3><p id="ov">…</p></div>
   ${t.d?.length ? `<div class="d-sec"><h3>${t.id[0] === 't' ? 'Twórcy' : 'Reżyseria'}</h3><p>${esc(t.d.join(', '))}</p></div>` : ''}
@@ -985,22 +1028,30 @@ function openFilters() {
   body.dataset.id = '';
   body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="margin:0 0 6px;font:700 28px var(--sfd)">Filtry</h2>
   <div class="f-group"><h3>Sortuj</h3><div class="row2"><select data-f="sort">
-    ${[['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['imdb', 'Ocena IMDb'], ['rt', 'Rotten Tomatoes'], ['mc', 'Metacritic'], ['new', 'Najnowsze'], ['pop', 'Popularne teraz'], ['votes', 'Liczba głosów']]
+    ${[['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['imdb', 'Ocena IMDb'], ['rt', 'Rotten Tomatoes'], ['mc', 'Metacritic'], ['cra', 'Krytycy Filmwebu'], ['new', 'Najnowsze'], ['pop', 'Popularne teraz'], ['votes', 'Liczba głosów']]
       .map(([v, l]) => `<option value="${v}"${f.sort === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
   <div class="f-group"><h3>Rodzaj</h3><div class="f-chips">${[['all', 'Wszystko'], ['movie', 'Filmy'], ['tv', 'Seriale']].map(([v, l]) => `<button class="chip${f.type === v ? ' on' : ''}" data-set="type:${v}">${l}</button>`).join('')}
     <button class="chip${f.mini ? ' on' : ''}" data-toggle="mini">Miniserial</button></div></div>
-  <div class="f-group"><h3>Nastrój</h3><div class="seg">${[['any', 'Dowolnie'], ['light', 'Lekko'], ['mid', 'Pośrodku'], ['heavy', 'Ciężko']].map(([v, l]) => `<button class="${f.mood === v ? 'on' : ''}" data-set="mood:${v}">${l}</button>`).join('')}</div></div>
-  <div class="f-group"><h3>Okres</h3><div class="f-chips">${Object.entries(PERIODS).map(([v, [l]]) => `<button class="chip${f.period === v ? ' on' : ''}" data-set="period:${v}">${l}</button>`).join('')}</div></div>
-  <div class="f-group"><h3>Czas trwania</h3><div class="seg">${Object.entries(LENB).map(([v, l]) => `<button class="${f.lenB === v ? 'on' : ''}" data-set="lenB:${v}">${l}</button>`).join('')}</div>
+  <div class="note" style="margin:0 0 4px">Wszystkie filtry działają razem. W każdej grupie możesz zaznaczyć kilka opcji.</div>
+  <div class="f-group"><h3>Nastrój</h3><div class="f-chips">${[['light', '☀︎ Lekko'], ['mid', '◑ Pośrodku'], ['heavy', '◐ Ciężko']].map(([v, l]) => `<button class="chip${f.moods.includes(v) ? ' on' : ''}" data-arr="moods:${v}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Okres</h3><div class="f-chips">${Object.entries(PERIODS).filter(([v]) => v !== 'any').map(([v, [l]]) => `<button class="chip${f.periods.includes(v) ? ' on' : ''}" data-arr="periods:${v}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Czas trwania</h3><div class="f-chips">${Object.entries(LENB).filter(([v]) => v !== 'any').map(([v, l]) => `<button class="chip${f.lens.includes(v) ? ' on' : ''}" data-arr="lens:${v}">${l}</button>`).join('')}</div>
     <div class="note" style="margin:6px 0 0">Filmy: krótko ≤ 100 min, średnio 100–130, długo > 130 · Seriale (odcinek): ≤ 30, 30–55, > 55 min</div></div>
   <div class="f-group"><h3>Tematy (dowolny z zaznaczonych)</h3><div class="f-chips">${THEMES.map(([k, l]) => `<button class="chip${(f.themes || []).includes(k) ? ' on' : ''}" data-arr="themes:${k}">${esc(l)}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Głosy krytyków</h3>
+    ${(S.critics || []).length ? `<div class="f-chips" style="margin-bottom:8px"><button class="chip${f.critRec ? ' on' : ''}" data-toggle="critRec">✎ Polecane przez moich krytyków</button></div>
+    <div class="note" style="margin:0 0 8px">Albo wybierz krytyków – pokażę filmy, które ocenił na 7+ choć jeden z zaznaczonych:</div>
+    <div class="f-chips">${S.critics.map((c, i) => `<button class="chip${f.crit.includes(String(i)) ? ' on' : ''}" data-arr="crit:${i}">${esc(c.name)} · ${Math.round(c.agree * 100)}%</button>`).join('')}</div>`
+    : `<div class="note" style="margin:0">Dopasowuję krytyków do Twoich ocen – lista pojawi się po kolejnych aktualizacjach danych.</div>`}
+    <div style="margin-top:10px">${'' }</div></div>
+  ${rng('minCra', 0, 9, .1, 'Min. ocena krytyków Filmwebu')}
   <div class="f-group"><h3>Dopasowanie</h3><div class="f-chips"><button class="chip${f.sure ? ' on' : ''}" data-toggle="sure">★ Tylko pewniaki – maksymalnie dopasowane</button></div></div>
   <div class="f-group"><h3>Gdzie obejrzeć (abonament / za darmo)</h3><div class="f-chips">
     ${S.local.subs.length ? `<button class="chip${f.onlySubs ? ' on' : ''}" data-toggle="onlySubs">★ Moje serwisy</button>` : ''}
     ${provs.map(([id, p]) => `<button class="chip${f.provs.includes(id) ? ' on' : ''}" data-arr="provs:${id}">${p[1] ? `<img src="${IMG}w45${p[1]}">` : ''}${esc(p[0])}</button>`).join('')}</div></div>
-  <div class="f-group"><h3>Nagrody</h3><div class="f-chips" style="margin-bottom:8px">
-    <button class="chip${f.awardMode === 'win' ? ' on' : ''}" data-set="awardMode:win">wygrane</button><button class="chip${f.awardMode === 'nom' ? ' on' : ''}" data-set="awardMode:nom">także nominacje</button></div>
-    <div class="f-chips">${Object.entries(AWARDS).map(([k, l]) => `<button class="chip${f.awards.includes(k) ? ' on' : ''}" data-arr="awards:${k}">${l}</button>`).join('')}</div></div>
+  <div class="f-group"><h3>Festiwale i nagrody</h3>
+    <div class="note" style="margin:0 0 8px">Stuknij: <b>wygrana</b> → <b>nominacja</b> (bez wygranej) → <b>wygrana lub nominacja</b> → wyłącz. Kilka zaznaczeń = dowolne z nich.</div>
+    <div class="f-chips">${FESTIVALS.flat().map(k => { const m = (f.awSel || {})[k]; const lab = { win: ' · wygrana', nom: ' · nominacja', any: ' · nominacja/wygrana' }[m] || ''; return `<button class="chip${m ? ' on' : ''}" data-aw="${k}">${esc(AWARDS[k])}${lab}</button>`; }).join('')}</div></div>
   <div class="f-group"><h3>Lata produkcji</h3><div class="row2">
     <select data-f="yFrom">${yearOpts(f.yFrom, years, true)}</select><select data-f="yTo">${yearOpts(f.yTo, years, false)}</select></div></div>
   <div class="f-group"><h3>Gatunki (wszystkie zaznaczone)</h3><div class="f-chips">${genres.map(([id, n]) => `<button class="chip${f.genres.includes(id) ? ' on' : ''}" data-arr="genres:${id}">${esc(n)}</button>`).join('')}</div></div>
@@ -1062,6 +1113,92 @@ function quickAnswer(kind, val) {
   renderQuick();
 }
 
+/* ------------------------------------------------------------------ odrzucenia z powodem */
+const REASONS = [['heavy', 'Za ciężki na mój gust'], ['light', 'Za lekki / za błahy'], ['theme', 'Nie ten temat'], ['creator', 'Nie lubię twórcy lub aktora'],
+  ['genre', 'Nie lubię tego gatunku'], ['seen', 'Już widziałem – ocenię'], ['later', 'Nie teraz (tylko ukryj)']];
+function openReasons(id) {
+  const t = S.byId.get(id), body = $('#sheet .sheet-body');
+  body.dataset.id = id;
+  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
+    <h2 style="font:700 24px var(--sfd);margin:0 0 4px">Dlaczego nie?</h2><div class="note">${esc(t.t)} – Twoja odpowiedź mówi modelowi, czego dokładnie unikać.</div>
+    <div class="list">${REASONS.map(([k, l]) => `<button class="card" data-reason="${k}" style="padding:15px 16px">${l}</button>`).join('')}</div>`;
+  $('#sheet').hidden = false;
+}
+function rejectWith(id, reason) {
+  if (reason === 'seen') { openDetail(id); return; }
+  S.local.hidden[id] = 1;
+  S.local.rejects = S.local.rejects || {};
+  S.local.rejects[id] = reason;
+  saveLocal(); closeSheet(); buildModel(); render();
+}
+/* priorytety z powodów odrzuceń: konkretne cechy dostają ujemne „pseudo-oceny” */
+function rejectPriors(out) {
+  const rj = S.local.rejects || {};
+  for (const [id, why] of Object.entries(rj)) {
+    const t = S.byId.get(id); if (!t) continue;
+    const ty = typ(t), fs = feats(t);
+    const push = (f, v, n) => { const k = ty + '|' + f, cur = out.get(k) || [0, 0]; out.set(k, [cur[0] + v * n, cur[1] + n]); };
+    if (why === 'theme') fs.filter(f => f[0] === 'h').forEach(f => push(f, -.5, 1));
+    if (why === 'creator') { (t.d || []).forEach(d => push('d' + d, -.9, 1.5)); (t.a || []).slice(0, 2).forEach(a => push('a' + a, -.5, 1)); }
+    if (why === 'genre') (t.g || []).forEach(g => push('g' + g, -.5, 1));
+  }
+}
+
+/* ------------------------------------------------------------------ pojedynki: który lepszy? */
+function duelPair() {
+  const R = [...S.myRatings.entries()].map(([id, r]) => ({ t: S.byId.get(id), r: r.r, id })).filter(x => x.t && (x.t.p || x.t.bd));
+  const done = new Set((S.local.duels || []).map(d => [d[0], d[1]].sort().join('|')));
+  for (let k = 0; k < 200; k++) {
+    const a = R[Math.floor(Math.random() * R.length)], b = R[Math.floor(Math.random() * R.length)];
+    if (!a || !b || a.id === b.id || typ(a.t) !== typ(b.t) || Math.abs(a.r - b.r) > 1) continue;
+    if (done.has([a.id, b.id].sort().join('|'))) continue;
+    return [a, b];
+  }
+  return null;
+}
+function openDuel() {
+  S.duel = S.duel || { n: 0 };
+  const pair = duelPair(), body = $('#sheet .sheet-body');
+  body.dataset.id = '';
+  if (!pair || S.duel.n >= 10) {
+    body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="font:700 28px var(--sfd)">Dzięki!</h2>
+      <p class="note">${S.duel.n} pojedynków zapisanych. Model rozróżnia teraz lepiej tytuły, które oceniłeś tak samo.</p><div class="btn-row"><button class="btn gold" data-duelskip>Jeszcze 10</button><button class="btn" data-close>Zamknij</button></div>`;
+    if (S.duel.n) { buildModel(); render(); }
+    S.duel = null; $('#sheet').hidden = false; return;
+  }
+  S.duel.pair = pair;
+  const side = (x, k) => `<button class="duel" data-duel="${k}"><div class="poster" style="background-image:url('${IMG}w342${x.t.p}')"></div><div class="t1">${esc(x.t.t)}</div><div class="t2">${x.t.y || ''} · Twoja ocena ${x.r}</div></button>`;
+  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
+    <div class="eyebrow">Pojedynek ${S.duel.n + 1} z 10</div><h2 style="font:700 26px var(--sfd);margin:4px 0 14px">Który był lepszy?</h2>
+    <div class="duels">${side(pair[0], 'a')}${side(pair[1], 'b')}</div>
+    <div class="btn-row" style="margin-top:14px"><button class="btn" data-duel="tie">Tak samo dobre</button><button class="btn" data-duelskip>Pomiń</button></div>`;
+  $('#sheet').hidden = false;
+}
+function duelAnswer(k) {
+  const [a, b] = S.duel.pair;
+  S.local.duels = S.local.duels || [];
+  if (k === 'a') S.local.duels.push([a.id, b.id]); else if (k === 'b') S.local.duels.push([b.id, a.id]); else S.local.duels.push([a.id, b.id, 'tie']);
+  S.duel.n++; saveLocal(); openDuel();
+}
+/* korekty ocen z pojedynków: zwycięzca +, przegrany − (maks. ±0,75) */
+function duelAdjust() {
+  const adj = {};
+  for (const [w, l, tie] of S.local.duels || []) { if (tie) continue; adj[w] = (adj[w] || 0) + .25; adj[l] = (adj[l] || 0) - .25; }
+  for (const k in adj) adj[k] = Math.max(-.75, Math.min(.75, adj[k]));
+  return adj;
+}
+
+/* ------------------------------------------------------------------ przypomnienia o ocenie */
+function reminders() {
+  const op = S.local.opened || {}, skip = S.local.remindSkip || {}, now = Date.now();
+  return Object.entries(op).filter(([id, d]) => !S.myRatings.has(id) && !skip[id] && !S.local.hidden[id] && S.byId.get(id) &&
+    now - Date.parse(d) > 18 * 3600e3 && now - Date.parse(d) < 10 * 86400e3).sort((a, b) => b[1].localeCompare(a[1])).slice(0, 3).map(([id]) => S.byId.get(id));
+}
+function toFilmweb() {   // oceny wystawione w aplikacji, których jeszcze nie ma na Filmwebie
+  const fwIds = new Set((S.me.ratings || []).map(r => r.id));
+  return Object.entries(S.local.ratings).filter(([id]) => !fwIds.has(id) && !(S.local.fwDone || {})[id] && S.byId.get(id)).map(([id, r]) => ({ t: S.byId.get(id), r: r.r }));
+}
+
 /* ------------------------------------------------------------------ deklaracje gustu */
 const DECL_GENRES = ['18', '35', '80', '53', '36', '10752', '878', '9648', '10749', '99', '16', '27', '14', '28', '12', '10765', '10759', '10768'];
 function declHTML() {
@@ -1087,10 +1224,17 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
+  if (el.dataset.aw) { const m = S.f.awSel = S.f.awSel || {}, k = el.dataset.aw, nx = { undefined: 'win', win: 'nom', nom: 'any', any: undefined }[m[k]]; if (nx) m[k] = nx; else delete m[k]; saveLocal(); openFilters(); return; }
+  if (el.dataset.reason) { rejectWith($('#sheet .sheet-body').dataset.id, el.dataset.reason); return; }
+  if (el.dataset.duel) { duelAnswer(el.dataset.duel); return; }
+  if (el.dataset.duelskip != null) { S.duel = null; openDuel(); return; }
+  if (el.dataset.remind) { openDetail(el.dataset.remind); return; }
+  if (el.dataset.remindx) { S.local.remindSkip = S.local.remindSkip || {}; S.local.remindSkip[el.dataset.remindx] = 1; saveLocal(); render(); return; }
+  if (el.dataset.fwdone) { S.local.fwDone = S.local.fwDone || {}; S.local.fwDone[el.dataset.fwdone] = 1; saveLocal(); render(); return; }
   if (el.dataset.qrate) { quickAnswer('rate', +el.dataset.qrate); return; }
   if (el.dataset.qact) { quickAnswer(el.dataset.qact); return; }
   if (el.dataset.declpart) { S.declPart = el.dataset.declpart; render(); return; }
@@ -1108,10 +1252,9 @@ document.addEventListener('click', e => {
   if (el.dataset.chip) {
     const [k, v] = el.dataset.chip.split(':'), f = S.f;
     if (k === 'type') f.type = v;
-    if (k === 'mood') f.mood = f.mood === v ? 'any' : v;
-    if (k === 'period') f.period = f.period === v ? 'any' : v;
-    if (k === 'len') f.lenB = f.lenB === v ? 'any' : v;
+    if (['moods', 'periods', 'lens'].includes(k)) { const a = f[k], i = a.indexOf(v); i >= 0 ? a.splice(i, 1) : a.push(v); }
     if (k === 'sure') f.sure = !f.sure;
+    if (k === 'critRec') f.critRec = !f.critRec;
     if (k === 'subs') f.onlySubs = !f.onlySubs;
     if (k === 'aw') { const i = f.awards.indexOf(v); i >= 0 ? f.awards.splice(i, 1) : f.awards.push(v); }
     if (k === 'pl') f.country = f.country === 'PL' ? '' : 'PL';
@@ -1122,7 +1265,7 @@ document.addEventListener('click', e => {
   const sid = $('#sheet .sheet-body').dataset.id;
   if (el.dataset.rate) { setRating(sid, +el.dataset.rate); openDetail(sid); return; }
   if (el.dataset.want != null) { S.local.want[sid] = !S.want.has(sid); saveLocal(); mergeRatings(); buildModel(); openDetail(sid); return; }
-  if (el.dataset.hide != null) { if (S.local.hidden[sid]) delete S.local.hidden[sid]; else S.local.hidden[sid] = 1; saveLocal(); closeSheet(); buildModel(); render(); return; }
+  if (el.dataset.hide != null) { if (S.local.hidden[sid]) { delete S.local.hidden[sid]; delete (S.local.rejects || {})[sid]; saveLocal(); closeSheet(); buildModel(); render(); } else openReasons(sid); return; }
   if (el.dataset.set) { const i = el.dataset.set.indexOf(':'), k = el.dataset.set.slice(0, i), v = el.dataset.set.slice(i + 1); S.f[k] = k === 'minVotes' ? +v : v; saveLocal(); openFilters(); return; }
   if (el.dataset.arr) { const [k, v] = el.dataset.arr.split(':'); S.f[k] = S.f[k] || []; const a = S.f[k], i = a.indexOf(v); i >= 0 ? a.splice(i, 1) : a.push(v); saveLocal(); openFilters(); return; }
   if (el.dataset.toggle) { S.f[el.dataset.toggle] = !S.f[el.dataset.toggle]; saveLocal(); openFilters(); return; }

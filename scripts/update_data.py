@@ -277,12 +277,18 @@ def imdb_ratings():
 
 # ---------------------------------------------------------------- Wikidata
 WD = "https://query.wikidata.org/sparql"
-AWARD_RULES = [  # (kod, regex po angielskiej nazwie nagrody)
-    ("oscar", r"^Academy Award"), ("globe", r"^Golden Globe"), ("bafta", r"^(BAFTA|British Academy (Film|Television))"),
-    ("cannes", r"Palme d'Or|Grand Prix \(Cannes|Cannes Film Festival"), ("venice", r"Golden Lion|Venice"),
-    ("berlin", r"Golden Bear|Berlin"), ("emmy", r"Emmy"), ("cesar", r"^César"), ("goya", r"^Goya"),
-    ("orzel", r"Polish Film Award|Eagle Award"), ("gdynia", r"Gdynia|Golden Lions Award"),
+AWARD_RULES = [  # (kod, regex po angielskiej nazwie nagrody) – jedna nagroda może dać kilka kodów
+    ("oscar_bp", r"^Academy Award for Best Picture"), ("oscar_intl", r"^Academy Award for Best (International|Foreign Language) Feature"),
+    ("oscar", r"^Academy Award"),
+    ("globe", r"^Golden Globe"), ("bafta", r"^(BAFTA|British Academy (Film|Television))"),
+    ("palme", r"Palme d.Or"), ("cannes", r"Palme d.Or|Cannes|Grand Prix \(Cannes|Prix du Jury|Un Certain Regard|Caméra d.Or|Camera d.Or"),
+    ("lion", r"^Golden Lion(?!s)"), ("venice", r"Golden Lion(?!s)|Venice|Volpi Cup|Silver Lion(?!s)"),
+    ("bear", r"^Golden Bear"), ("berlin", r"Golden Bear|Berlin|Silver Bear"),
+    ("emmy", r"Emmy"), ("cesar", r"^César"), ("goya", r"^Goya"), ("efa", r"European Film Award"),
+    ("orzel", r"Polish Film Award|Eagle Award|Orzeł"), ("gdynia", r"Gdynia|Golden Lions Award|Polish Film Festival"),
     ("sag", r"Screen Actors Guild"), ("ind", r"Independent Spirit"), ("sundance", r"Sundance"),
+    ("tiff", r"Toronto International Film Festival|People.s Choice Award \(TIFF"), ("kv", r"Karlovy Vary|Crystal Globe"),
+    ("sansebastian", r"San Sebasti|Golden Shell"), ("critics", r"Critics. Choice"), ("annie", r"^Annie Award"),
 ]
 
 def wd_query(q):
@@ -295,10 +301,7 @@ def wd_query(q):
     return r.get("results", {}).get("bindings", [])
 
 def classify_award(label):
-    for code, rx in AWARD_RULES:
-        if re.search(rx, label or "", re.I):
-            return code
-    return None
+    return [code for code, rx in AWARD_RULES if re.search(rx, label or "", re.I)]
 
 def wikidata_enrich(imdb_ids):
     """Zwraca {imdb: {"fw": filmwebId, "win": [...], "nom": [...], "wl": [...]}} – dwa lekkie zapytania na porcję."""
@@ -340,12 +343,12 @@ def wikidata_enrich(imdb_ids):
             labels[bd["aw"]["value"].rsplit("/", 1)[-1]] = bd["l"]["value"]
     for im, rel, qid in award_rows:
         lab = labels.get(qid)
-        code = classify_award(lab) if lab else None
-        if code:
-            e = out[im]
+        codes = classify_award(lab) if lab else []
+        e = out[im]
+        for code in codes:
             (e["win"] if rel == "w" else e["nom"]).add(code)
-            if rel == "w" and code in ("oscar", "cannes", "venice", "berlin", "globe", "emmy", "bafta"):
-                e["wl"].add(lab)
+        if rel == "w" and set(codes) & {"oscar", "cannes", "venice", "berlin", "globe", "emmy", "bafta", "gdynia", "orzel", "efa"}:
+            e["wl"].add(lab)
     for e in out.values():
         e["nom"] -= e["win"]
         e["win"], e["nom"], e["wl"] = sorted(e["win"]), sorted(e["nom"]), sorted(e["wl"])[:6]
@@ -544,6 +547,10 @@ def main():
     cfmap = st.get("cf", {})
 
     # 5. Wikidata (nagrody + id Filmwebu) – dla nowych i co 30 dni
+    if st.get("aw_ver") != 2:
+        for v in wd.values():
+            v["_ts"] = 0
+        st["aw_ver"] = 2
     stale = [i for i in imdbs if i not in wd or NOW - wd[i].get("_ts", 0) > 30 * 86400]
     log("Wikidata do odświeżenia:", len(stale))
     res = wikidata_enrich(stale)
@@ -578,6 +585,22 @@ def main():
         for f, v in pmap(get_fwr, fw_todo[i:i + 100], 4):
             if v.get("r") or time_left() > 3:   # nie zapisuj pustych wyników z odcięcia budżetu
                 fwr[f] = v
+
+    # 6b. Krytycy Filmwebu – 10 najbliższych Twoim ocenom + ich głosy
+    crit_top, crit_per = [], {}
+    if time_left() > 20:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import critics
+            my_f = {r["fw"]: r["r"] for r in me["ratings"] if not r.get("tv") and r.get("r")}
+            cand = sorted((k for k in fw_ids if k.startswith("m") and k in titles),
+                          key=lambda k: -(imdb.get(titles[k].get("imdb") or "", (0, 0))[1] or titles[k].get("tv", 0)))
+            crit_top, crit_per = critics.run(fw_get, pmap, time_left, log, st, my_f, [fw_ids[k] for k in cand])
+            STATUS["critics"] = {"top": len(crit_top), "films": len(crit_per)}
+        except Exception as e:
+            log("Krytycy: błąd", e)
+            STATUS["notes"].append(f"Krytycy: {type(e).__name__}: {str(e)[:120]}")
+    save_state(st)
 
     # 7. OMDb (RT, Metacritic) – limit dzienny
     if OMDB_KEY and time_left() > 4:
@@ -621,6 +644,10 @@ def main():
         if w.get("nom"): o["an"] = w["nom"]
         if w.get("wl"): o["awl"] = w["wl"]
         if im and om.get(im, {}).get("awt"): o["awt"] = om[im]["awt"]
+        cp = crit_per.get(str(f)) if f else None
+        if cp:
+            if cp.get("avg"): o["cra"], o["crn"] = cp["avg"], cp["n"]
+            if cp.get("top"): o["ctop"] = cp["top"]
         if k.startswith("m") and k[1:] in cfmap:
             o["cf"], o["cfs"] = cfmap[k[1:]]
         catalog.append(o)
@@ -636,6 +663,7 @@ def main():
     write_json("catalog.json", catalog)
     write_json("me.json", me)
     write_json("meta.json", meta)
+    write_json("critics.json", crit_top)
     STATUS["catalog"] = len(catalog)
     STATUS["minutes"] = round((time.time() - START) / 60, 1)
     STATUS["coverage"] = {"imdb": sum(1 for o in catalog if o.get("ir")), "filmweb": sum(1 for o in catalog if o.get("fr")),

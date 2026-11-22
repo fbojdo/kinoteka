@@ -200,3 +200,9 @@ table.mini td+td{text-align:right;white-space:nowrap;color:var(--tx2)}
 .seg button{flex:1;padding:7px 4px;border-radius:7px;font-size:14px;font-weight:500;color:var(--tx)}
 .seg button.on{background:var(--bg2);box-shadow:0 1px 3px rgba(0,0,0,.15);font-weight:600}
 .linkbtn{color:var(--tint);font-size:15px;padding:0}
+.duels{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.duel{text-align:left}
+.duel .poster{width:100%;height:auto;aspect-ratio:2/3;border-radius:12px;box-shadow:var(--shadow)}
+.duel .t1{margin-top:8px;font-weight:600;font-size:15px}
+.duel .t2{font-size:13px;color:var(--tx2)}
+.duel:active .poster{transform:scale(.97)}
