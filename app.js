@@ -335,7 +335,8 @@ function trainingSamples(beforeDate) {
   const out = [], adj = duelAdjust();
   for (const [id, r] of S.myRatings) {
     const t = S.byId.get(id);
-    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r + (adj[id] || 0), date: r.date, id, w: recencyW(r.date) });
+    const sp = (S.local.surp || {})[id];   // zaskoczenie po seansie: tytuł mówi o guście więcej, niż widać po etykietach
+    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r + (adj[id] || 0), date: r.date, id, w: recencyW(r.date) * (sp ? 1.4 : sp === 0 ? 1.05 : 1) });
   }
   return out;
 }
@@ -896,6 +897,20 @@ function viewMine() {
   $('#view').innerHTML = html + (items.length ? list(items, 'mine') : `<div class="empty">Pusto.</div>`);
 }
 
+/* Zaskoczenia po seansie: czy aplikacja wyprzedza Twoje oczekiwania (prognoza vs ocena tłumu) */
+function surpHTML() {
+  const pct = x => Math.round(x * 100) + "%";
+  const sp = Object.entries(S.local.surp || {}).filter(([id]) => S.byId.get(id) && S.myRatings.has(id));
+  if (!sp.length) return '';
+  const lab = { '-1': 'gorzej', 0: 'jak myślałem', 1: 'lepiej' };
+  const rows = sp.map(([id, v]) => { const t = S.byId.get(id), base = t.fr || t.ir, p = (S.local.predlog || {})[id]?.[0] ?? S.preds.get(id); return { t, v, base, p, r: S.myRatings.get(id).r }; });
+  const sure = rows.filter(x => x.v && x.base && x.p != null);
+  const hit = sure.filter(x => Math.sign(x.p - x.base) === x.v).length;
+  const c = k => rows.filter(x => x.v === k).length;
+  return `<div class="section-h">Zaskoczenia po seansie</div>
+    <div class="note">Lepiej niż myślałeś: <b>${c(1)}</b> · gorzej: <b>${c(-1)}</b> · bez niespodzianek: <b>${c(0)}</b>.${sure.length ? ` Przy zaskoczeniach aplikacja przewidziała kierunek (wyżej/niżej niż ocena widzów) w <b>${pct(hit / sure.length)}</b> przypadków.` : ''} Zaskoczenia mają w nauce większą wagę – pokazują to, czego nie widać po gatunku i obsadzie.</div>
+    <table class="mini">${rows.slice(-10).reverse().map(x => `<tr><td>${esc(x.t.t)}</td><td>${lab[x.v]}</td><td>${x.p != null ? 'prognoza ' + fmt(x.p) : ''}</td><td>Ty ${x.r}</td></tr>`).join('')}</table>`;
+}
 function viewStats() {
   const v = $('#view'), ev = evaluate();
   if (!ev) { v.innerHTML = `<div class="empty">Za mało ocen do oceny trafności (potrzeba 30).</div>` + declHTML() + settingsHTML(); return; }
@@ -926,6 +941,7 @@ function viewStats() {
     <div class="note">Model uczony tylko na ocenach sprzed ${ev.timeFrom} przewidział ${ev.time.n} najnowszych: średni błąd <b>±${fmt(ev.time.mae, 2)}</b>, ${pct(ev.time.within1)} w granicy 1 pkt.</div>
     <table class="mini">${ev.timePairs.slice(-10).reverse().map(([p, r, s]) => `<tr><td>${esc(s.t.t)}</td><td>prognoza ${fmt(p)}</td><td class="${Math.abs(p - r) <= 1 ? 'good' : 'bad'}">Ty ${r}</td></tr>`).join('')}</table>`;
   }
+  html += surpHTML();
   html += `<div class="section-h">Na żywo</div>`;
   html += ev.live ? `<div class="note">Przewidywania zapisane, zanim oceniłeś tytuł (${ev.live.n}): średni błąd <b>±${fmt(ev.live.mae, 2)}</b>.</div>
     <table class="mini">${ev.livePairs.slice(-15).reverse().map(([p, r, s]) => `<tr><td>${esc(s.t?.t)}</td><td>prognoza ${fmt(p)}</td><td class="${Math.abs(p - r) <= 1 ? 'good' : 'bad'}">Ty ${r}</td></tr>`).join('')}</table>`
@@ -996,6 +1012,7 @@ async function openDetail(id) {
   <div class="d-sec"><h3>Gdzie obejrzeć w Polsce</h3>${pv.length ? `<div class="prov-row">${pv.map(([pid, c]) => { const pi = provInfo(pid) || [pid]; return `<a class="prov" href="${tmdbUrl}/watch?locale=PL" target="_blank" rel="noopener">${pi[1] ? `<img src="${IMG}w92${pi[1]}">` : ''}<span>${esc(pi[0])}<br><em>${kind[c]}</em></span></a>`; }).join('')}</div>` : '<p style="color:var(--tx2)">Brak w serwisach VOD w Polsce.</p>'}</div>
   <div class="d-sec"><h3>${mine ? 'Zmień ocenę' : 'Obejrzałem – moja ocena'}</h3>
     <div class="stars">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button data-rate="${n}" class="${mine?.r === n ? 'on' : ''}">${n}</button>`).join('')}</div>
+    ${mine ? `<div class="surp"><span>Lepiej czy gorzej, niż się spodziewałeś?</span><div class="seg">${[['-1', 'Gorzej'], ['0', 'Tak jak myślałem'], ['1', 'Lepiej']].map(([v, l]) => `<button data-surp="${v}" class="${String((S.local.surp || {})[id]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
     <div class="note" style="margin:6px 0 0">Ocena trafia do modelu od razu. Na Filmweb wystaw ją osobno – aplikacja nie może zapisywać na Twoim koncie.</div></div>
   <div class="btn-row">
     <button class="btn${S.want.has(id) ? ' on' : ''}" data-want>${S.want.has(id) ? '✓ Chcę zobaczyć' : '+ Chcę zobaczyć'}</button>
@@ -1224,10 +1241,11 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
+  if (el.dataset.surp != null) { const id = $('#sheet .sheet-body').dataset.id; S.local.surp = S.local.surp || {}; const v = +el.dataset.surp; if (S.local.surp[id] === v) delete S.local.surp[id]; else S.local.surp[id] = v; saveLocal(); buildModel(); openDetail(id); return; }
   if (el.dataset.aw) { const m = S.f.awSel = S.f.awSel || {}, k = el.dataset.aw, nx = { undefined: 'win', win: 'nom', nom: 'any', any: undefined }[m[k]]; if (nx) m[k] = nx; else delete m[k]; saveLocal(); openFilters(); return; }
   if (el.dataset.reason) { rejectWith($('#sheet .sheet-body').dataset.id, el.dataset.reason); return; }
   if (el.dataset.duel) { duelAnswer(el.dataset.duel); return; }
