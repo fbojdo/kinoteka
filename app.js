@@ -757,7 +757,7 @@ function search(q) {
 function render() {
   const titles = { rec: 'Dla Ciebie', browse: 'Katalog', mine: 'Moje', profile: 'Profil', stats: 'Trafność' };
   $('#title').innerHTML = S.tab === 'rec'
-    ? `<span class="logo" aria-label="Kinoman"><b>KINO</b>MAN</span><span class="logo-sub">Fryderyk’s Cut</span>`
+    ? `<span class="logo" aria-label="Kinoteka"><b>KINO</b>TEKA</span><span class="logo-sub">Fryderyk’s Choice</span>`
     : titles[S.tab];
   $('#title').classList.toggle('brand', S.tab === 'rec');
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
