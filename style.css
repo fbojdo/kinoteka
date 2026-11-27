@@ -215,3 +215,21 @@ table.mini td+td{text-align:right;white-space:nowrap;color:var(--tx2)}
 .logo b{font-weight:800;letter-spacing:6px}
 .logo-sub{display:block;margin-top:8px;font:italic 500 15px var(--sf);letter-spacing:.3px;color:var(--tx2)}
 .logo-sub::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#ff3b30;margin:0 8px 2px 1px;vertical-align:middle}
+
+html,body,button,a,select,input{touch-action:manipulation}
+body{-webkit-text-size-adjust:100%}
+select,input{font-size:16px}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:.5px solid var(--sep,rgba(128,128,128,.2))}
+.trow span{font-size:15px;flex:1;min-width:0}
+.tseg{display:flex;background:var(--fill);border-radius:10px;padding:2px;flex:none}
+.tseg button{width:34px;height:30px;border-radius:8px;font-size:15px;font-weight:700;color:var(--tx2)}
+.tseg button.on{background:var(--bg2);color:var(--tx);box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.tseg button.on.lv-never,.tseg button.on.lv-dislike{color:#ff3b30}
+.tseg button.on.lv-top{color:#ff9f0a}
+.tseg button.on.lv-like,.tseg button.on.lv-love{color:#30d158}
+.mctl{display:flex;gap:8px;overflow-x:auto;padding:0 0 12px;scrollbar-width:none}
+.mctl::-webkit-scrollbar{display:none}
+.mctl select{flex:none;appearance:none;-webkit-appearance:none;background:var(--fill);color:var(--tx);border:0;border-radius:18px;padding:8px 14px;font:500 15px var(--sf)}
+.card.crit.on{outline:2px solid var(--tint)}
+.row-link{cursor:pointer}
+.row-link td:first-child{color:var(--tint)}

@@ -8,6 +8,8 @@ Korzysta z publicznych endpointów Filmwebu:
   /users/{krytyk}/votes/film/{id}  – ocena konkretnego krytyka
 """
 import math
+import time
+import urllib.parse
 
 
 def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=2600):
@@ -35,6 +37,8 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
         for f, r in zip(need, pmap(lambda f: get(f"/film/{f}/critics"), need, 4)):
             if isinstance(r, list):
                 C["film"][f] = [str(x) for x in r if str(x) in critics]
+            elif r is None and calls[0] < cap[0] and time_left() >= 14:
+                C["film"][f] = []          # brak krytyków – nie pytaj ponownie w każdym przebiegu
 
     def fetch_votes(pairs):
         pairs = [p for p in pairs if p not in C["votes"]]
@@ -78,10 +82,32 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
     top = [s for s in sims if s["score"] > 0.15][:10]
     top_ids = [s["id"] for s in top]
 
-    # 3) Filmy z katalogu: oceny Twoich krytyków + średnia krytyków Filmwebu
-    if top_ids:
-        film_critics(cand_fids[:1500])
-        fetch_votes([f"{c}:{f}" for f in cand_fids[:1500] for c in C["film"].get(f, []) if c in top_ids])
+    # 3) Co polecają Twoi krytycy: ich listy „najwyżej ocenione" + ostatnie oceny (odświeżane raz dziennie),
+    #    potem oceny pojedynczych filmów z tych list, które są w katalogu.
+    cat = set(map(str, cand_fids))
+    lists = C.setdefault("lists", {})
+    day = time.strftime("%Y-%m-%d")
+    for cid in top_ids:
+        L = lists.get(cid)
+        if L and L.get("day") == day:
+            continue
+        nick = C["list"][cid]["name"] or ""
+        ids = []
+        for path in (f"/user/{urllib.parse.quote(nick)}/vote/film/top", f"/users/{cid}/votes/film"):
+            r = get(path)
+            if isinstance(r, list):
+                ids += [str(x[0]) for x in r if isinstance(x, list) and x]
+            elif isinstance(r, dict):
+                for it in r.get("votes") or []:
+                    fid = (it.get("id") or {}).get("id") if isinstance(it.get("id"), dict) else it.get("id") or it.get("entity")
+                    if fid:
+                        ids.append(str(fid))
+        if ids:
+            lists[cid] = {"day": day, "ids": list(dict.fromkeys(ids))}
+    fetch_votes([f"{c}:{f}" for c in top_ids for f in lists.get(c, {}).get("ids", []) if f in cat])
+    if top_ids:   # uzupełniająco: popularne filmy z katalogu, które krytycy ocenili
+        film_critics(cand_fids[:600])
+        fetch_votes([f"{c}:{f}" for f in cand_fids[:600] for c in C["film"].get(f, []) if c in top_ids])
     cap[0] = max_calls
     need_avg = [f for f in cand_fids[:3000] if f not in C["avg"]][:max(0, max_calls - calls[0])]
     for f, r in zip(need_avg, pmap(lambda f: get(f"/film/{f}/critics/rating"), need_avg, 4)):
@@ -98,5 +124,7 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
             d["top"] = tv
         if d:
             per[f] = d
-    log(f"Krytycy: zapytań {calls[0]}, dopasowanych {len(sims)}, top {len(top)}, filmów z ich ocenami {sum(1 for v in per.values() if 'top' in v)}")
+    mine_set = set(map(str, my_film_ratings))
+    log(f"Krytycy: zapytań {calls[0]}, dopasowanych {len(sims)}, top {len(top)}, filmów z ich ocenami {sum(1 for v in per.values() if 'top' in v)}"
+        f" (w tym nieobejrzanych {sum(1 for f, v in per.items() if 'top' in v and f not in mine_set)})")
     return top, per

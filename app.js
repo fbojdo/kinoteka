@@ -34,6 +34,7 @@ const DEFAULT_F = () => ({
 function loadLocal() {
   try { Object.assign(S.local, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); } catch (e) { /* tryb prywatny */ }
   S.f = Object.assign(DEFAULT_F(), S.local.filters || {});
+  backupDaily();
   for (const k of ['moods', 'periods', 'lens', 'themes', 'crit', 'regions', 'provs', 'genres', 'awards']) if (!Array.isArray(S.f[k])) S.f[k] = [];
 }
 let saveT;
@@ -77,6 +78,8 @@ async function load() {
     return;
   }
   for (const t of S.cat) S.byId.set(t.id, t);
+  seedTaste();
+  try { navigator.storage?.persist?.(); } catch (e) { /* brak */ }
   mergeRatings();
   buildModel();
   render();
@@ -126,6 +129,9 @@ const THEMES = [
   ['war', 'wojna', /\b(war|world war|soldier|military|battle|nazi|holocaust|army|resistance|occupation)\b/i],
   ['history', 'historia', /(histor|period piece|\d{2}th century|medieval|ancient|royal|king|queen|empire|biograph)/i],
   ['politics', 'polityka i władza', /(politic|president|election|government|corruption|dictator|spy|espionage|\bcia\b|kgb|cold war|totalitarian|communis|propaganda)/i],
+  ['spy', 'szpiedzy i wywiad', /(\bspy\b|spies|espionage|secret agent|intelligence agency|\bmi6\b|\bkgb\b|\bcia\b|mossad|double agent|undercover)/i],
+  ['terror', 'terroryzm', /(terroris|hostage|bombing|counterterror|counter-terror|jihad|hijack)/i],
+  ['superhero', 'superbohaterowie', /(superhero|super hero|marvel cinematic|marvel comics|dc comics|dc extended|based on comic|comic book|superpower|super power)/i],
   ['crime', 'kryminał i śledztwo', /(crime|murder|detective|police|gangster|mafia|heist|serial killer|investigat|drug|cartel|robbery|thief)/i],
   ['law', 'prawo i sąd', /(lawyer|court|trial|justice|prison|attorney|judge)/i],
   ['family', 'rodzina', /(family|father|mother|daughter|\bson\b|marriage|divorce|parent|sibling|brother|sister|grandparent)/i],
@@ -355,7 +361,7 @@ function weakSamples(mu) {
 
 /* Autostrojenie: wybiera siłę wygładzania gustu i regularyzację pod Twoje dane (3-krotna CV) */
 function autotune(real) {
-  const key = Math.floor(real.length / 10) + ':' + Math.floor(Object.keys(S.local.hidden || {}).length / 10) + ':' + Object.keys(S.local.decl || {}).length;
+  const key = Math.floor(real.length / 10) + ':' + Math.floor(Object.keys(S.local.hidden || {}).length / 10) + ':' + Object.keys(S.local.decl || {}).length + ':' + Object.keys(S.local.taste || {}).length;
   const cached = S.local.tune;
   if (cached && cached.key === key) return cached;
   if (real.length < 40) return { key, scale: 1, ridge: 4 };
@@ -390,9 +396,21 @@ function buildModel() {
   S.model = m; S.mu = mu;
   const idx = new Map(samples.map((s, i) => [s.id, i]));
   for (const t of S.cat) {
-    const { p, gsr, unc } = m.predict(t, idx.get(t.id));
+    t._rh = null;
+    let { p, gsr, unc } = m.predict(t, idx.get(t.id));
+    const q = quality(t); if (q) p = Math.min(p, q + 2.6);   // bez skrajnych wystrzałów ponad ocenę widzów
     S.preds.set(t.id, p); S.reasons.set(t.id, gsr); S.unc.set(t.id, unc);
   }
+  // siła Twoich reguł gustu – dobrana tak, by najlepiej tłumaczyła Twoje oceny (min. 0,5, bo to Twoja deklaracja)
+  const hasRules = Object.values(S.local.taste || {}).some(Boolean);
+  let best = [0, 1e9], base = null;
+  for (const k of hasRules ? [0, .25, .5, .75, 1, 1.25, 1.5] : [0]) {
+    let e = 0; for (const s of real) e += Math.abs(Math.max(1, Math.min(10, S.preds.get(s.id) + k * tasteAdj(s.t))) - s.r);
+    e /= real.length; if (k === 0) base = e; if (e < best[1]) best = [k, e];
+  }
+  S.ruleK = hasRules ? Math.max(.5, best[0]) : 0;
+  S.ruleGain = base ? 1 - best[1] / base : 0;
+  if (S.ruleK) for (const t of S.cat) S.preds.set(t.id, adjP(t, S.preds.get(t.id)));
   logPredictions();
   S.evalCache = null;
 }
@@ -416,9 +434,10 @@ function evaluate() {
   for (let k = 0; k < K; k++) {
     const test = shuffled.filter((_, i) => i % K === k), trn = shuffled.filter((_, i) => i % K !== k);
     const m = train([...trn, ...weak]);
-    for (const s of test) cvPairs.push([m.predict(s.t).p, s.r, s]);
+    for (const s of test) { const p0 = m.predict(s.t).p, q = quality(s.t); cvPairs.push([adjP(s.t, q ? Math.min(p0, q + 2.6) : p0), s.r, s, p0]); }
   }
   res.cv = metrics(cvPairs);
+  res.cvRaw = metrics(cvPairs.map(x => [x[3], x[1]]));
   res.cvMovie = metrics(cvPairs.filter(x => typ(x[2].t) === 'm'));
   res.cvTv = metrics(cvPairs.filter(x => typ(x[2].t) === 't'));
   res.baseMean = metrics(all.map(s => [mu, s.r]));
@@ -429,7 +448,7 @@ function evaluate() {
   if (dated.length >= 40) {
     const cut = Math.floor(dated.length * .8);
     const m = train([...dated.slice(0, cut), ...weak]);
-    const pairs = dated.slice(cut).map(s => [m.predict(s.t).p, s.r, s]);
+    const pairs = dated.slice(cut).map(s => [adjP(s.t, m.predict(s.t).p), s.r, s]);
     res.time = metrics(pairs); res.timeFrom = dated[cut].date; res.timePairs = pairs;
   }
   const live = [];
@@ -477,7 +496,9 @@ function explain(t, max = 3) {
   const g = S.reasons.get(t.id); if (!g || !S.model) return [];
   const out = [];
   const cs = critSignal(t);
-  if (cs != null && cs >= .5) { const best = t.ctop.slice().sort((a, b) => b[1] - a[1])[0]; out.push(`Twoi krytycy go cenią – ${S.critics[best[0]]?.name || ''} ${best[1]}/10`); }
+  const rh = ruleHits(t).filter(([, lv]) => lv === 'like' || lv === 'love').map(([k]) => tasteLabel(k).toLowerCase());
+  if (rh.length) out.push('Twój gust: ' + rh.slice(0, 3).join(', '));
+  if (critRecommended(t)) { const best = t.ctop.slice().sort((a, b) => b[1] - a[1])[0]; out.push(`Twoi krytycy go cenią – ${S.critics[best[0]]?.name || ''} ${best[1]}/10`); }
   if (t.cf != null && t.cfs > 1 && t.cf > .35) out.push('Widzowie o guście podobnym do Twojego oceniają go wysoko');
   if (g.sims.length) {
     const names = g.sims.filter(([s]) => s > .15).slice(0, 2).map(([, i]) => {
@@ -624,6 +645,7 @@ function viewProfile() {
   <div class="eyebrow" style="margin-top:6px">Portret widza · ${P.R.length} ocen</div>
   <p class="lead">${esc(arch.slice(0, 3).map((x, i) => i ? x[0].toLowerCase() : x[0]).join(arch.length > 2 ? ', ' : ' i ').replace(/, ([^,]*)$/, ' i $1'))}.</p>
   <div class="note">To interpretacja Twoich wyborów filmowych – nie test psychologiczny.</div>
+  <button class="quick" data-taste-open style="margin-top:12px"><i style="background:linear-gradient(135deg,#30d158,#0a84ff)">♥</i><div><b>Mój gust</b><span>${Object.values(S.local.taste || {}).filter(Boolean).length} reguł: kraje, gatunki, tematy, epoki – co lubisz, czego nie pokazywać</span></div></button>
   <div class="section-h">Twój typ widza</div>
   ${arch.slice(0, 3).map(([n, d]) => `<div class="arch"><b>${n}</b><span>${d}</span></div>`).join('')}
   <div class="section-h">Twoje osie</div>
@@ -684,7 +706,96 @@ function critSignal(t) {   // ważone odchylenie ocen „Twoich” krytyków od 
   for (const [i, v] of t.ctop) { const c = S.critics[i]; if (!c) continue; num += c.score * (v - c.mean); den += c.score; }
   return den ? num / (den + .3) : null;
 }
+function critAvg(t) {      // średnia ocen Twoich krytyków (ważona dopasowaniem)
+  if (!t.ctop || !(S.critics || []).length) return null;
+  let n = 0, d = 0;
+  for (const [i, v] of t.ctop) { const c = S.critics[i]; if (!c) continue; n += c.score * v; d += c.score; }
+  return d ? n / d : null;
+}
+function critRecommended(t) {   // polecają: wysoko u Twoich krytyków + co najmniej 7,0 dopasowania do Ciebie
+  const a = critAvg(t);
+  return a != null && (a >= 7.5 || (critSignal(t) ?? 0) >= .3) && (S.preds.get(t.id) ?? 0) >= 7;
+}
 function isSure(t) { const p = S.preds.get(t.id) || 0, u = (S.unc && S.unc.get(t.id)) || 9; return p - .5 * u >= 7.6; }
+
+/* ================================================================== MÓJ GUST – jawne reguły
+   Klucze: s:specjalne, r:region, c:kraj, g:gatunek, h:temat. Poziomy: never (nie pokazuj),
+   top (tylko wybitne), dislike, like, love. Działają podwójnie: filtrują listy i przesuwają
+   prognozę – siła przesunięcia dobierana automatycznie na Twoich ocenach. */
+const TASTE_LV = [['never', 'Nie pokazuj'], ['top', 'Tylko wybitne'], ['dislike', 'Nie lubię'], ['', 'Obojętne'], ['like', 'Lubię'], ['love', 'Uwielbiam']];
+const TASTE_ADJ = { never: -1.4, top: -.5, dislike: -.6, like: .35, love: .6 };
+const TOP_Q = 7.6;     // „wybitne”: średnia Filmweb/IMDb co najmniej tyle
+const SPECIAL = {
+  classic: ['Klasyka (przed 1980)', t => t.y && t.y < 1980],
+  y80: ['Kino lat 80.', t => t.y >= 1980 && t.y < 1990],
+  y90: ['Kino lat 90.', t => t.y >= 1990 && t.y < 2000],
+  anim: ['Animacje', t => (t.g || []).includes(16)],
+  animAsia: ['Animacje azjatyckie (anime)', t => (t.g || []).includes(16) && (t.c || []).slice(0, 2).some(c => REGION[c] === 'asia')],
+  romcom: ['Komedie romantyczne', t => (t.g || []).includes(35) && (t.g || []).includes(10749)],
+  superhero: ['Superbohaterowie (Marvel, DC)', t => feats(t).includes('hsuperhero')],
+  fantasy: ['Fantasy', t => (t.g || []).includes(14) || feats(t).includes('hfantasy')],
+  kids: ['Familijne i dla dzieci', t => (t.g || []).includes(10751) || (t.g || []).includes(10762)],
+  docs: ['Dokumenty', t => (t.g || []).includes(99)],
+  reality: ['Reality i talk-show', t => (t.g || []).some(g => [10764, 10767, 10763].includes(g))],
+};
+const TASTE_COUNTRIES = ['PL', 'FR', 'IT', 'GB', 'DE', 'ES', 'CZ', 'DK', 'SE', 'NO', 'BE', 'IE', 'HU', 'RO', 'IS', 'FI', 'AT', 'US', 'CA', 'AU', 'JP', 'KR', 'CN', 'IN', 'IR', 'IL', 'TR', 'RU', 'MX', 'AR', 'BR'];
+const COUNTRY_ADJ = { PL: 'polskie', FR: 'francuskie', IT: 'włoskie', GB: 'brytyjskie', DE: 'niemieckie', ES: 'hiszpańskie', CZ: 'czeskie', DK: 'duńskie', SE: 'szwedzkie', NO: 'norweskie', US: 'amerykańskie', JP: 'japońskie', KR: 'koreańskie' };
+function tasteLabel(k) {
+  const p = k[0], v = k.slice(2);
+  if (p === 's') return SPECIAL[v]?.[0] || v;
+  if (p === 'r') return (REGION_NAMES[v] || v).replace(/^kino /, 'kino ');
+  if (p === 'c') return 'kino ' + (COUNTRY_ADJ[v] || (COUNTRY[v] || v));
+  if (p === 'g') return genreName(v) || v;
+  if (p === 'h') return THEME_NAMES[v] || v;
+  return k;
+}
+function ruleMatch(k, t) {
+  const p = k[0], v = k.slice(2);
+  if (p === 's') return !!SPECIAL[v]?.[1](t);
+  if (p === 'r') return (t.c || []).slice(0, 2).some(c => (REGION[c] || 'other') === v);
+  if (p === 'c') return (t.c || []).slice(0, 2).includes(v);
+  if (p === 'g') return (t.g || []).includes(+v);
+  if (p === 'h') return feats(t).includes('h' + v);
+  return false;
+}
+function ruleHits(t) {
+  if (t._rh) return t._rh;
+  const out = [];
+  for (const [k, lv] of Object.entries(S.local.taste || {})) if (lv && ruleMatch(k, t)) out.push([k, lv]);
+  return (t._rh = out);
+}
+const quality = t => { const q = [t.fr, t.ir].filter(Boolean); return q.length ? q.reduce((a, b) => a + b, 0) / q.length : (t.tv > 50 ? t.tr : 0); };
+function tasteAdj(t) {
+  let a = 0;
+  for (const [, lv] of ruleHits(t)) a += lv === 'top' ? (quality(t) >= TOP_Q ? 0 : TASTE_ADJ.top) : TASTE_ADJ[lv];
+  return Math.max(-1.5, Math.min(1, a));
+}
+function tasteBlocked(t) {   // ukryte regułami (nie dotyczy wyszukiwania i listy „Chcę zobaczyć”)
+  if (S.want && S.want.has(t.id)) return false;
+  for (const [, lv] of ruleHits(t)) if (lv === 'never' || (lv === 'top' && quality(t) < TOP_Q)) return true;
+  return false;
+}
+const adjP = (t, p) => Math.max(1, Math.min(10, p + (S.ruleK || 0) * tasteAdj(t)));
+/* Startowe reguły z Twoich deklaracji (25.11) – możesz je zmienić w Profil → Mój gust */
+function seedTaste() {
+  if (S.local.tasteSeeded) return;
+  const T0 = S.local.taste || {}, T = S.local.taste = {};
+  Object.assign(T, {
+    's:classic': 'top', 's:anim': 'dislike', 's:animAsia': 'never', 'r:asia': 'top',
+    'r:eu': 'like', 'c:IT': 'like', 'c:CZ': 'like', 'c:FR': 'like', 'c:GB': 'like', 'c:ES': 'dislike',
+    'r:pl': 'top', 'c:PL': 'like',
+    'h:war': 'like', 'h:spy': 'like', 'h:terror': 'like',
+    's:romcom': 'dislike', 's:fantasy': 'dislike', 's:superhero': 'never',
+  }, T0);
+  // dawne deklaracje (♥/✕) przechodzą do reguł
+  for (const [k, v] of Object.entries(S.local.decl || {})) {
+    const f = k.split('|')[1]; if (!f || !v) continue;
+    const key = f[0] + ':' + f.slice(1);
+    if ('rgh'.includes(f[0]) && !T[key]) T[key] = v > 0 ? 'like' : 'dislike';
+  }
+  S.local.decl = {};
+  S.local.tasteSeeded = 1; saveLocal();
+}
 
 /* ================================================================== FILTRY */
 function passes(t, f, ignoreSeen) {
@@ -695,7 +806,7 @@ function passes(t, f, ignoreSeen) {
   if (f.periods.length && !f.periods.some(p => inPeriod(t, p))) return false;
   if (f.lens.length && !f.lens.some(b => inLen(t, b))) return false;
   if (f.crit.length && !f.crit.some(i => (t.ctop || []).some(([r, v]) => r === +i && v >= 7))) return false;
-  if (f.critRec && !(critSignal(t) >= .5)) return false;
+  if (f.critRec && !critRecommended(t)) return false;
   if (f.minCra && !(t.cra >= f.minCra)) return false;
   if (f.themes && f.themes.length) { const fs = feats(t); if (!f.themes.some(h => fs.includes('h' + h))) return false; }
   if (f.mini && !(typ(t) === 't' && (t.seasons || 0) <= 1)) return false;
@@ -721,6 +832,7 @@ function passes(t, f, ignoreSeen) {
   if (f.regions && f.regions.length && !f.regions.includes(regionOf(t))) return false;
   if (f.country === 'notUS' && (t.c || [])[0] === 'US') return false;
   if (!ignoreSeen && f.hideSeen && (S.myRatings.has(t.id) || S.local.hidden[t.id])) return false;
+  if (!ignoreSeen && !S.myRatings.has(t.id) && tasteBlocked(t)) return false;
   return true;
 }
 function activeFilterCount() {
@@ -731,6 +843,11 @@ function activeFilterCount() {
   }
   return n;
 }
+function topScore(t) {   // najwyżej oceniane z uwzględnieniem liczby głosów (średnia Bayesa)
+  const q = quality(t); if (!q) return 0;
+  const v = t.iv || (t.tv || 0) * 8;
+  return (v * q + 25000 * 6.4) / (v + 25000);
+}
 function sortFn(sort) {
   const P = t => S.preds.get(t.id) ?? 0;
   return {
@@ -739,6 +856,7 @@ function sortFn(sort) {
     imdb: (a, b) => (b.ir || 0) - (a.ir || 0),
     rt: (a, b) => (b.rt ?? -1) - (a.rt ?? -1),
     mc: (a, b) => (b.mc ?? -1) - (a.mc ?? -1),
+    top: (a, b) => topScore(b) - topScore(a),
     cra: (a, b) => (b.cra || 0) - (a.cra || 0),
     new: (a, b) => (b.y || 0) - (a.y || 0),
     pop: (a, b) => (b.pop || 0) - (a.pop || 0),
@@ -853,7 +971,7 @@ function viewRec() {
     const mineSubs = S.local.subs.length ? items.filter(t => S.local.subs.some(p => (t.pv || {})[p] && 'sfa'.includes(t.pv[p]))) : [];
     html += shelf('Na Twoich serwisach', pick(mineSubs, 12));
     html += shelf('Z Twojej listy „Chcę zobaczyć”', pick(items.filter(t => S.want.has(t.id)), 12));
-    html += shelf('Twoi krytycy polecają', pick(items.filter(t => critSignal(t) >= .5).sort((a, b) => critSignal(b) - critSignal(a)), 12));
+    html += shelf('Twoi krytycy polecają', pick(items.filter(critRecommended).sort((a, b) => (S.preds.get(b.id) + .3 * (critAvg(b) - 7)) - (S.preds.get(a.id) + .3 * (critAvg(a) - 7))), 14));
     html += shelf('Filmy dla Ciebie', pick(items.filter(t => typ(t) === 'm'), 12));
     html += shelf('Seriale dla Ciebie', pick(items.filter(t => typ(t) === 't'), 12));
     html += shelf('Kino europejskie', pick(items.filter(t => ['eu', 'uk', 'pl'].includes(regionOf(t))), 12));
@@ -870,25 +988,90 @@ function viewRec() {
 
 function viewBrowse() {
   const base = S.q.length >= 2 ? search(S.q) : S.cat;
-  const items = base.filter(t => passes(t, S.f, S.q.length >= 2)).sort(sortFn(S.f.sort));
+  const items = base.filter(t => passes(t, S.f, S.q.length >= 2)).sort(sortFn(S.local.bsort || 'top'));
   $('#view').innerHTML = `<div class="note">${items.length.toLocaleString('pl')} tytułów</div>` + (items.length ? list(items, 'browse') : `<div class="empty">Brak wyników.</div>`);
 }
 
+const MS_DEF = { sort: 'date', type: 'all', rate: 'all', genre: '', region: '', wsort: 'match' };
+function mineTabs(sub) {
+  return `<div class="chips" style="padding:0 0 10px">${[['rated', 'Ocenione'], ['want', 'Chcę zobaczyć'], ['critics', 'Moi krytycy'], ['hidden', 'Ukryte'], ['unmatched', 'Niedopasowane'], ['backup', 'Kopia zapasowa']]
+    .map(([k, l]) => `<button class="chip${sub === k ? ' on' : ''}" data-mine="${k}">${l}</button>`).join('')}</div>`;
+}
+function mineControls(sub) {
+  const M = S.local.ms = Object.assign({}, MS_DEF, S.local.ms || {});
+  const sel = (key, opts) => `<select data-ms="${key}">${opts.map(([v, l]) => `<option value="${v}"${M[key] === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  const genres = Object.entries(S.meta.genres || {}).sort((a, b) => a[1].localeCompare(b[1], 'pl'));
+  const sorts = sub === 'rated'
+    ? [['date', 'Ostatnio ocenione'], ['dateAsc', 'Najdawniej ocenione'], ['rDesc', 'Moja ocena: najwyższe'], ['rAsc', 'Moja ocena: najniższe'], ['yDesc', 'Rok: najnowsze'], ['yAsc', 'Rok: najstarsze'], ['title', 'Tytuł A–Z'], ['above', 'Oceniam wyżej niż widzowie'], ['below', 'Oceniam niżej niż widzowie']]
+    : [['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['yDesc', 'Rok: najnowsze'], ['title', 'Tytuł A–Z']];
+  return `<div class="mctl">${sel(sub === 'rated' ? 'sort' : 'wsort', sorts)}
+    ${sel('type', [['all', 'Filmy i seriale'], ['m', 'Filmy'], ['t', 'Seriale']])}
+    ${sub === 'rated' ? sel('rate', [['all', 'Każda ocena'], ['9', '9–10'], ['7', '7–8'], ['5', '5–6'], ['1', '1–4']]) : ''}
+    ${sel('genre', [['', 'Każdy gatunek'], ...genres])}
+    ${sel('region', [['', 'Każdy region'], ...Object.entries(REGION_NAMES)])}</div>`;
+}
+function mineFilter(items, sub) {
+  const M = Object.assign({}, MS_DEF, S.local.ms || {}), R = id => S.myRatings.get(id) || {};
+  const band = { 9: [9, 10], 7: [7, 8], 5: [5, 6], 1: [1, 4] }[M.rate];
+  items = items.filter(t => (M.type === 'all' || typ(t) === M.type) && (!M.genre || (t.g || []).includes(+M.genre)) && (!M.region || regionOf(t) === M.region)
+    && (sub !== 'rated' || !band || (R(t.id).r >= band[0] && R(t.id).r <= band[1])));
+  const crowd = t => R(t.id).r - (quality(t) || R(t.id).r);
+  const f = {
+    date: (a, b) => (R(b.id).date || '').localeCompare(R(a.id).date || ''), dateAsc: (a, b) => (R(a.id).date || '').localeCompare(R(b.id).date || ''),
+    rDesc: (a, b) => R(b.id).r - R(a.id).r || (R(b.id).date || '').localeCompare(R(a.id).date || ''), rAsc: (a, b) => R(a.id).r - R(b.id).r,
+    yDesc: (a, b) => (b.y || 0) - (a.y || 0), yAsc: (a, b) => (a.y || 0) - (b.y || 0), title: (a, b) => a.t.localeCompare(b.t, 'pl'),
+    above: (a, b) => crowd(b) - crowd(a), below: (a, b) => crowd(a) - crowd(b),
+    match: (a, b) => (S.preds.get(b.id) || 0) - (S.preds.get(a.id) || 0), fw: (a, b) => (b.fr || 0) - (a.fr || 0),
+  }[sub === 'rated' ? M.sort : M.wsort];
+  return items.sort(f);
+}
+function viewMyCritics() {
+  const C = S.critics || [], sel = S.critSel;
+  let html = mineTabs('critics');
+  if (!C.length) { $('#view').innerHTML = html + `<div class="empty">Dopasowuję krytyków do Twoich ocen – lista pojawi się po najbliższej aktualizacji danych.</div>`; return; }
+  html += `<div class="note">10 krytyków Filmwebu, których oceny najbardziej przypominają Twoje. Stuknij, żeby zobaczyć ich oceny.</div>
+    <div class="list">${C.map((c, i) => `<button class="card crit${sel === i ? ' on' : ''}" data-crit="${i}" style="padding:12px 16px"><div class="info"><div class="ttl">${i + 1}. ${esc(c.name)}</div><div class="sub">${esc(c.pub || '')} · ${c.n} wspólnych filmów · zgodność ${Math.round(c.agree * 100)}% · korelacja ${fmt(c.corr, 2)}</div></div></button>`).join('')}</div>`;
+  if (sel != null && C[sel]) {
+    const c = C[sel], rated = [], recs = [];
+    for (const t of S.cat) { const v = (t.ctop || []).find(x => x[0] === sel); if (!v) continue; (S.myRatings.has(t.id) ? rated : recs).push([t, v[1]]); }
+    recs.sort((a, b) => b[1] - a[1] || (S.preds.get(b[0].id) || 0) - (S.preds.get(a[0].id) || 0));
+    rated.sort((a, b) => Math.abs(S.myRatings.get(a[0].id).r - a[1]) - Math.abs(S.myRatings.get(b[0].id).r - b[1]));
+    html += `<div class="section-h">${esc(c.name)} poleca – nie widziałeś <small>${recs.length}</small></div>`
+      + (recs.length ? `<table class="mini">${recs.slice(0, 40).map(([t, v]) => `<tr data-id="${t.id}" class="row-link"><td>${esc(t.t)} <small style="color:var(--tx2)">${t.y || ''}</small></td><td>krytyk <b>${v}</b></td><td>dla Ciebie <b>${fmt(S.preds.get(t.id))}</b></td></tr>`).join('')}</table>` : `<div class="note">Jeszcze zbieram – przybędzie po kolejnych aktualizacjach.</div>`)
+      + `<div class="section-h">Wspólne filmy <small>${rated.length}</small></div>
+      <table class="mini">${rated.map(([t, v]) => { const r = S.myRatings.get(t.id).r; return `<tr data-id="${t.id}" class="row-link"><td>${esc(t.t)}</td><td>Ty <b>${r}</b></td><td class="${Math.abs(r - v) <= 1 ? 'good' : 'bad'}">krytyk <b>${v}</b></td></tr>`; }).join('')}</table>`;
+  }
+  $('#view').innerHTML = html;
+}
+function viewBackup() {
+  let b = {}; try { b = JSON.parse(localStorage.getItem(BAK_KEY) || '{}'); } catch (e) { /* brak */ }
+  const n = Object.keys(S.local.ratings).length;
+  $('#view').innerHTML = mineTabs('backup') + `<div class="section-h">Twoje dane w aplikacji</div>
+    <div class="note">Oceny z Filmwebu są bezpieczne – aplikacja pobiera je sama 3 razy dziennie. Na tym urządzeniu przechowywane są tylko: ${n} ocen nadanych w aplikacji, „Chcę zobaczyć”, ukryte tytuły, pojedynki, reguły „Mój gust” i ustawienia.<br><br>
+    Uwaga: aplikacja z ekranu głównego iPhone’a i Safari mają <b>osobne</b> pamięci. Kopia pozwala przenieść dane między nimi albo na nowy telefon.</div>
+    <div class="btn-row"><button class="btn gold" data-bak="export">Zapisz kopię (Pliki / iCloud)</button></div>
+    <div class="btn-row" style="margin-top:8px"><label class="btn" style="text-align:center">Wczytaj kopię z pliku<input type="file" accept="application/json,.json" data-bak-file hidden></label></div>
+    <div class="note" style="margin-top:14px">Automatyczna kopia dzienna: ${b.prevDay ? `stan z ${b.prevDay} – <button class="linkbtn" data-bak="restore">przywróć</button>` : 'pojawi się jutro'}.</div>`;
+}
 function viewMine() {
   const sub = S.mineTab || 'rated';
-  let items, html = `<div class="chips" style="padding:0 0 10px">${[['rated', 'Ocenione'], ['want', 'Chcę zobaczyć'], ['hidden', 'Ukryte'], ['unmatched', 'Niedopasowane']]
+  if (sub === 'critics') { viewMyCritics(); return; }
+  if (sub === 'backup') { viewBackup(); return; }
+  let items, html = mineTabs(sub);
+  html += (sub === 'rated' || sub === 'want') ? mineControls(sub) : '';
+  if (false) html = `<div class="chips" style="padding:0 0 10px">${[['rated', 'Ocenione'], ['want', 'Chcę zobaczyć'], ['hidden', 'Ukryte'], ['unmatched', 'Niedopasowane']]
     .map(([k, l]) => `<button class="chip${sub === k ? ' on' : ''}" data-mine="${k}">${l}</button>`).join('')}</div>`;
   const tfw = toFilmweb();
   if (tfw.length && sub === 'rated') html += `<div class="section-h">Do przepisania na Filmweb <small>${tfw.length}</small></div>
     <div class="note">Oceny z aplikacji – wpisz je na Filmwebie, wtedy wejdą też do Twojego profilu tam.</div>
     <table class="mini">${tfw.map(x => `<tr><td><a href="${x.t.fw ? `https://www.filmweb.pl/${typ(x.t) === 't' ? 'serial' : 'film'}/x-${x.t.y || 0}-${x.t.fw}` : `https://www.filmweb.pl/search#/?query=${encodeURIComponent(x.t.ot || x.t.t)}`}" target="_blank" rel="noopener" style="color:var(--tint);text-decoration:none">${esc(x.t.t)}</a></td><td><b>${x.r}</b></td><td><button class="linkbtn" data-fwdone="${x.t.id}">✓ wpisane</button></td></tr>`).join('')}</table><div class="section-h">Wszystkie oceny</div>`;
   if (sub === 'rated') {
-    items = [...S.myRatings.entries()].filter(([id]) => S.byId.has(id)).sort((a, b) => (b[1].date || '').localeCompare(a[1].date || '')).map(([id]) => S.byId.get(id));
-    const avg = items.length ? [...S.myRatings.values()].reduce((a, r) => a + r.r, 0) / S.myRatings.size : 0;
-    html += `<div class="note">${S.myRatings.size} ocen · średnia ${fmt(avg)} · źródło: Filmweb (${esc(S.me.user)})${Object.keys(S.local.ratings).length ? ' + oceny z aplikacji' : ''}</div>`;
+    items = mineFilter([...S.myRatings.keys()].map(id => S.byId.get(id)).filter(Boolean), 'rated');
+    const avg = items.length ? items.reduce((a, t) => a + S.myRatings.get(t.id).r, 0) / items.length : 0;
+    html += `<div class="note">${items.length} z ${S.myRatings.size} ocen · średnia ${fmt(avg)} · źródło: Filmweb (${esc(S.me.user)})${Object.keys(S.local.ratings).length ? ' + oceny z aplikacji' : ''}</div>`;
   } else if (sub === 'want') {
-    items = [...S.want].map(id => S.byId.get(id)).filter(Boolean).sort((a, b) => (S.preds.get(b.id) || 0) - (S.preds.get(a.id) || 0));
-    html += `<div class="note">Posortowane według dopasowania do Ciebie</div>`;
+    items = mineFilter([...S.want].map(id => S.byId.get(id)).filter(Boolean), 'want');
+    html += `<div class="note">${items.length} tytułów</div>`;
   } else if (sub === 'hidden') {
     items = Object.keys(S.local.hidden).filter(k => S.local.hidden[k]).map(id => S.byId.get(id)).filter(Boolean);
   } else {
@@ -1047,9 +1230,9 @@ function openFilters() {
   const body = $('#sheet .sheet-body');
   body.dataset.id = '';
   body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button><h2 style="margin:0 0 6px;font:700 28px var(--sfd)">Filtry</h2>
-  <div class="f-group"><h3>Sortuj</h3><div class="row2"><select data-f="sort">
-    ${[['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['imdb', 'Ocena IMDb'], ['rt', 'Rotten Tomatoes'], ['mc', 'Metacritic'], ['cra', 'Krytycy Filmwebu'], ['new', 'Najnowsze'], ['pop', 'Popularne teraz'], ['votes', 'Liczba głosów']]
-      .map(([v, l]) => `<option value="${v}"${f.sort === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+  <div class="f-group"><h3>Sortuj</h3><div class="row2"><select data-f="${S.tab === 'browse' ? 'bsort' : 'sort'}">
+    ${[...(S.tab === 'browse' ? [['top', 'Najwyżej oceniane (oceny + liczba głosów)']] : []), ['match', 'Dopasowanie do mnie'], ['fw', 'Ocena Filmweb'], ['imdb', 'Ocena IMDb'], ['rt', 'Rotten Tomatoes'], ['mc', 'Metacritic'], ['cra', 'Krytycy Filmwebu'], ['new', 'Najnowsze'], ['pop', 'Popularne teraz'], ['votes', 'Liczba głosów']]
+      .map(([v, l]) => `<option value="${v}"${(S.tab === 'browse' ? (S.local.bsort || 'top') : f.sort) === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
   <div class="f-group"><h3>Rodzaj</h3><div class="f-chips">${[['all', 'Wszystko'], ['movie', 'Filmy'], ['tv', 'Seriale']].map(([v, l]) => `<button class="chip${f.type === v ? ' on' : ''}" data-set="type:${v}">${l}</button>`).join('')}
     <button class="chip${f.mini ? ' on' : ''}" data-toggle="mini">Miniserial</button></div></div>
   <div class="note" style="margin:0 0 4px">Wszystkie filtry działają razem. W każdej grupie możesz zaznaczyć kilka opcji.</div>
@@ -1141,8 +1324,24 @@ function openReasons(id) {
   body.dataset.id = id;
   body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
     <h2 style="font:700 24px var(--sfd);margin:0 0 4px">Dlaczego nie?</h2><div class="note">${esc(t.t)} – Twoja odpowiedź mówi modelowi, czego dokładnie unikać.</div>
-    <div class="list">${REASONS.map(([k, l]) => `<button class="card" data-reason="${k}" style="padding:15px 16px">${l}</button>`).join('')}</div>`;
+    <div class="list">${REASONS.map(([k, l]) => `<button class="card" data-reason="${k}" style="padding:15px 16px">${l}</button>`).join('')}</div>
+    <div class="section-h">Albo nie pokazuj więcej takich</div>
+    <div class="note">Ustawia regułę w „Mój gust” i ukrywa ten tytuł.</div>
+    <div class="f-chips">${rejectRules(t).map(([k, lv, l]) => `<button class="chip" data-rrule="${k}|${lv}">${esc(l)}</button>`).join('')}</div>`;
   $('#sheet').hidden = false;
+}
+function rejectRules(t) {
+  const out = [];
+  const asia = (t.c || []).slice(0, 2).some(c => REGION[c] === 'asia');
+  if ((t.g || []).includes(16) && asia) out.push(['s:animAsia', 'never', 'Bez azjatyckich animacji']);
+  if ((t.g || []).includes(16)) out.push(['s:anim', 'dislike', 'Nie lubię animacji']);
+  if (t.y && t.y < 1980) out.push(['s:classic', 'top', 'Klasyka tylko wybitna'], ['s:classic', 'never', 'Bez klasyki']);
+  else if (t.y && t.y < 2000) out.push([`s:y${String(t.y).slice(2, 3)}0`, 'top', `Lata ${String(t.y).slice(2, 3)}0. tylko wybitne`]);
+  const c = (t.c || [])[0];
+  if (c) { out.push(['c:' + c, 'dislike', `Nie lubię: ${tasteLabel('c:' + c)}`]); const r = REGION[c]; if (r && r !== 'eu' && r !== 'pl') out.push(['r:' + r, 'top', `${REGION_NAMES[r]} – tylko wybitne`]); }
+  for (const g of (t.g || []).slice(0, 3)) if (genreName(g)) out.push(['g:' + g, 'dislike', `Nie lubię: ${genreName(g).toLowerCase()}`]);
+  for (const sp of ['romcom', 'superhero', 'fantasy', 'kids']) if (SPECIAL[sp][1](t)) out.push(['s:' + sp, 'never', `Bez: ${SPECIAL[sp][0].toLowerCase()}`]);
+  return out.filter(x => x[0] !== 's:y00' && x[0] !== 's:y70' && x[0] !== 's:y60');
 }
 function rejectWith(id, reason) {
   if (reason === 'seen') { openDetail(id); return; }
@@ -1222,6 +1421,14 @@ function toFilmweb() {   // oceny wystawione w aplikacji, których jeszcze nie m
 /* ------------------------------------------------------------------ deklaracje gustu */
 const DECL_GENRES = ['18', '35', '80', '53', '36', '10752', '878', '9648', '10749', '99', '16', '27', '14', '28', '12', '10765', '10759', '10768'];
 function declHTML() {
+  const T = Object.entries(S.local.taste || {}).filter(([, v]) => v);
+  const lvName = Object.fromEntries(TASTE_LV);
+  return `<div class="section-h">Mój gust – Twoje reguły</div>
+  <div class="note">${T.length} reguł. ${S.ruleK ? `Siła dobrana na Twoich ocenach: ×${fmt(S.ruleK, 2)}${S.ruleGain > .005 ? ` – poprawiają trafność o <b>${Math.round(S.ruleGain * 100)}%</b>` : ''}.` : ''}</div>
+  <div class="f-chips">${T.map(([k, v]) => `<span class="chip ${['never', 'dislike', 'top'].includes(v) ? 'decl neg' : 'decl on'}">${esc(tasteLabel(k))} · ${esc(lvName[v])}</span>`).join('')}</div>
+  <button class="btn" data-taste-open style="margin-top:12px">Zmień mój gust</button>`;
+}
+function declHTML_old() {
   const d = S.local.decl || {}, part = S.declPart || 'm';
   const chip = (key, label) => {
     const v = d[part + '|' + key] || 0;
@@ -1236,6 +1443,67 @@ function declHTML() {
   <div class="f-group"><h3>Gatunki</h3><div class="f-chips">${genres.join('')}</div></div>`;
 }
 
+/* ------------------------------------------------------------------ edytor „Mój gust” */
+function openTaste() {
+  const T = S.local.taste || {}, body = $('#sheet .sheet-body');
+  body.dataset.id = '';
+  const row = (k) => `<div class="trow"><span>${esc(tasteLabel(k))}</span><div class="tseg">${TASTE_LV.map(([lv, l]) => `<button class="${(T[k] || '') === lv ? 'on' : ''} lv-${lv || 'zero'}" data-taste="${k}|${lv}" title="${l}">${{ never: '⊘', top: '★', dislike: '−', '': '·', like: '+', love: '♥' }[lv]}</button>`).join('')}</div></div>`;
+  const genres = Object.keys(S.meta.genres || {}).filter(g => ![16, 10751, 10762, 10764, 10767, 10763, 99].includes(+g)).sort((a, b) => genreName(a).localeCompare(genreName(b), 'pl'));
+  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
+  <h2 style="margin:0 0 6px;font:700 28px var(--sfd)">Mój gust</h2>
+  <div class="note">⊘ nie pokazuj · ★ tylko wybitne (Filmweb/IMDb ≥ ${fmt(TOP_Q)}) · − nie lubię · · obojętne · + lubię · ♥ uwielbiam.<br>Reguły od razu ukrywają lub podbijają tytuły, a ich siłę model sprawdza na Twoich ocenach.</div>
+  <div class="f-group"><h3>Najważniejsze</h3>${Object.keys(SPECIAL).map(k => row('s:' + k)).join('')}</div>
+  <div class="f-group"><h3>Regiony</h3>${Object.keys(REGION_NAMES).filter(k => k !== 'other').map(k => row('r:' + k)).join('')}</div>
+  <div class="f-group"><h3>Kraje</h3>${TASTE_COUNTRIES.map(c => row('c:' + c)).join('')}</div>
+  <div class="f-group"><h3>Tematy</h3>${THEMES.map(([k]) => row('h:' + k)).join('')}</div>
+  <div class="f-group"><h3>Gatunki</h3>${genres.map(g => row('g:' + g)).join('')}</div>`;
+  $('#sheet').hidden = false;
+}
+function setTaste(k, lv) {
+  const T = S.local.taste = S.local.taste || {};
+  if (lv) T[k] = lv; else delete T[k];
+  for (const t of S.cat) t._rh = null;
+  saveLocal(); clearTimeout(S._tt); S._tt = setTimeout(() => { buildModel(); if ($('#sheet').hidden) render(); }, 700);
+}
+
+/* ------------------------------------------------------------------ kopia zapasowa */
+const BAK_KEY = 'kinoteka.v1.bak';
+function backupDaily() {   // raz dziennie zachowuje poprzedni stan – ochrona przed przypadkowym nadpisaniem
+  try {
+    const cur = localStorage.getItem(LS_KEY); if (!cur) return;
+    const b = JSON.parse(localStorage.getItem(BAK_KEY) || '{}');
+    if (b.day !== today()) localStorage.setItem(BAK_KEY, JSON.stringify({ day: today(), prev: b.data || null, prevDay: b.day || null, data: cur }));
+  } catch (e) { /* brak miejsca */ }
+}
+function exportBackup() {
+  const data = JSON.stringify({ app: 'kinoteka', v: 1, date: new Date().toISOString(), local: S.local }, null, 1);
+  const name = `kinoteka-kopia-${today()}.json`;
+  const file = new File([data], name, { type: 'application/json' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Kinoteka – kopia' }).catch(() => {}); return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
+}
+function importBackup(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const j = JSON.parse(rd.result); const L = j.local || j;
+      if (!L || typeof L !== 'object' || !('ratings' in L)) throw new Error('format');
+      const n = Object.keys(L.ratings || {}).length;
+      if (!confirm(`Wczytać kopię z ${String(j.date || '').slice(0, 10) || 'pliku'}? (${n} ocen z aplikacji). Obecne dane aplikacji zostaną zastąpione.`)) return;
+      localStorage.setItem(LS_KEY, JSON.stringify(L)); location.reload();
+    } catch (e) { alert('To nie jest plik kopii Kinoteki.'); }
+  };
+  rd.readAsText(file);
+}
+function restoreYesterday() {
+  try {
+    const b = JSON.parse(localStorage.getItem(BAK_KEY) || '{}');
+    if (!b.prev) { alert('Brak wcześniejszej kopii.'); return; }
+    if (!confirm(`Przywrócić stan z ${b.prevDay}?`)) return;
+    localStorage.setItem(LS_KEY, b.prev); location.reload();
+  } catch (e) { /* brak */ }
+}
+
 /* ------------------------------------------------------------------ zdarzenia */
 function setRating(id, r) {
   S.local.ratings[id] = { r, date: today() };
@@ -1244,10 +1512,17 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
+  if (el.dataset.tasteOpen != null) { openTaste(); return; }
+  if (el.dataset.taste) { const [k, lv] = el.dataset.taste.split('|'); setTaste(k, lv); const y = $('#sheet .sheet-body').scrollTop; openTaste(); $('#sheet .sheet-body').scrollTop = y; return; }
+  if (el.dataset.rrule) { const [k, lv] = el.dataset.rrule.split('|'), id = $('#sheet .sheet-body').dataset.id; S.local.taste = S.local.taste || {}; S.local.taste[k] = lv; for (const t of S.cat) t._rh = null; S.local.hidden[id] = 1; saveLocal(); closeSheet(); buildModel(); render(); return; }
+  if (el.dataset.crit != null) { const i = +el.dataset.crit; S.critSel = S.critSel === i ? null : i; render(); return; }
+  if (el.dataset.bak === 'export') { exportBackup(); return; }
+  if (el.dataset.bak === 'restore') { restoreYesterday(); return; }
+  if (el.classList.contains('row-link') && el.dataset.id) { openDetail(el.dataset.id); return; }
   if (el.dataset.surp != null) { const id = $('#sheet .sheet-body').dataset.id; S.local.surp = S.local.surp || {}; const v = +el.dataset.surp; if (S.local.surp[id] === v) delete S.local.surp[id]; else S.local.surp[id] = v; saveLocal(); buildModel(); openDetail(id); return; }
   if (el.dataset.aw) { const m = S.f.awSel = S.f.awSel || {}, k = el.dataset.aw, nx = { undefined: 'win', win: 'nom', nom: 'any', any: undefined }[m[k]]; if (nx) m[k] = nx; else delete m[k]; saveLocal(); openFilters(); return; }
   if (el.dataset.reason) { rejectWith($('#sheet .sheet-body').dataset.id, el.dataset.reason); return; }
@@ -1294,9 +1569,15 @@ document.addEventListener('click', e => {
   if (el.dataset.resetQuick != null) { S.f = DEFAULT_F(); saveLocal(); render(); return; }
   if (el.dataset.id && (el.classList.contains('card') || el.classList.contains('tile') || el.classList.contains('hero'))) openDetail(el.dataset.id);
 });
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (el.dataset.ms) { S.local.ms = Object.assign({}, MS_DEF, S.local.ms || {}, { [el.dataset.ms]: el.value }); S.limit = 40; saveLocal(); render(); return; }
+  if (el.dataset.bakFile != null && el.files[0]) importBackup(el.files[0]);
+});
 document.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'q') { S.q = el.value.trim(); S.limit = 40; clearTimeout(S._qt); S._qt = setTimeout(render, 180); return; }
+  if (el.dataset.f === 'bsort') { S.local.bsort = el.value; saveLocal(); return; }
   if (el.dataset.f) {
     S.f[el.dataset.f] = el.tagName === 'SELECT' && el.dataset.f === 'sort' ? el.value : +el.value;
     const out = el.parentElement.querySelector('output');
