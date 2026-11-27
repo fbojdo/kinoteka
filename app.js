@@ -80,6 +80,10 @@ async function load() {
   for (const t of S.cat) S.byId.set(t.id, t);
   seedTaste();
   try { navigator.storage?.persist?.(); } catch (e) { /* brak */ }
+  try {   // dane przeniesione z Safari (jednorazowo, łączone – nic nie ginie)
+    const sd = await getJSON('seed/local.json');
+    if (sd && sd.id && !(S.local.seeds || {})[sd.id]) { Object.assign(S.local, mergeLocal(S.local, sd.local)); S.local.seeds = { ...(S.local.seeds || {}), [sd.id]: today() }; saveLocal(); }
+  } catch (e) { /* brak pliku */ }
   trackFilmwebChanges();
   mergeRatings();
   buildModel();

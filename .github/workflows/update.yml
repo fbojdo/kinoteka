@@ -68,7 +68,7 @@ jobs:
         run: |
           test -s data/catalog.json || { echo "Brak danych – nie publikuję pustej strony"; exit 1; }
           mkdir -p _site
-          cp -r index.html app.js style.css sw.js manifest.webmanifest icons data _site/
+          cp -r index.html app.js style.css sw.js manifest.webmanifest icons data seed _site/
           sed -i "s/__BUILD__/${GITHUB_RUN_ID}/" _site/sw.js _site/index.html
 
       - uses: actions/upload-pages-artifact@v3
