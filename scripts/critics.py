@@ -104,7 +104,11 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
                         ids.append(str(fid))
         if ids:
             lists[cid] = {"day": day, "ids": list(dict.fromkeys(ids))}
-    fetch_votes([f"{c}:{f}" for c in top_ids for f in lists.get(c, {}).get("ids", []) if f in cat])
+    c0 = calls[0]
+    lp = [f"{c}:{f}" for c in top_ids for f in lists.get(c, {}).get("ids", []) if f in cat]
+    fetch_votes(lp)
+    log(f"Krytycy – listy: katalog fw {len(cat)}, list {len(lists)}, filmów na listach {sum(len(lists.get(c, {}).get('ids', [])) for c in top_ids)}, "
+        f"w katalogu {len(lp)}, zapytań przed {c0}, po {calls[0]}, czas {time_left():.1f} min")
     if top_ids:   # uzupełniająco: popularne filmy z katalogu, które krytycy ocenili
         film_critics(cand_fids[:600])
         fetch_votes([f"{c}:{f}" for f in cand_fids[:600] for c in C["film"].get(f, []) if c in top_ids])
