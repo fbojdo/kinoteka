@@ -82,6 +82,7 @@ async function load() {
   try { navigator.storage?.persist?.(); } catch (e) { /* brak */ }
   try {   // dane przeniesione z Safari (jednorazowo, łączone – nic nie ginie)
     const sd = await getJSON('seed/local.json');
+    S.seed = sd && sd.local || null;   // stałe źródło – wczytywane przy każdym starcie, jak oceny z Filmwebu
     if (sd && sd.id && !(S.local.seeds || {})[sd.id]) { Object.assign(S.local, mergeLocal(S.local, sd.local)); S.local.seeds = { ...(S.local.seeds || {}), [sd.id]: today() }; saveLocal(); }
   } catch (e) { /* brak pliku */ }
   trackFilmwebChanges();
@@ -110,6 +111,8 @@ function trackFilmwebChanges() {   // oceny zmienione na Filmwebie od ostatniego
 }
 function mergeRatings() {
   S.myRatings.clear();
+  for (const [id, r] of Object.entries((S.seed || {}).ratings || {})) if (!S.local.ratings[id]) S.local.ratings[id] = r;
+  for (const [id, v] of Object.entries((S.seed || {}).want || {})) if (!(id in S.local.want)) S.local.want[id] = v;
   for (const r of S.me.ratings || []) if (r.id && r.r) S.myRatings.set(r.id, { r: r.r, date: r.date || '2000-01-01', src: 'fw', fav: r.fav });
   for (const [id, r] of Object.entries(S.local.ratings)) {
     const cur = S.myRatings.get(id);
@@ -1698,3 +1701,10 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW && !reloaded) { reloaded = true; location.reload(); } });
 }
 load();
+
+/* Aplikacja z ekranu głównego wznawia się z tła bez przeładowania – po dłuższej przerwie wczytaj ją na nowo (nowe oceny, nowa wersja) */
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 20 * 60 * 1000 && !document.querySelector('#sheet .sheet-body')) location.reload();
+});
