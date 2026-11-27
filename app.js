@@ -80,11 +80,30 @@ async function load() {
   for (const t of S.cat) S.byId.set(t.id, t);
   seedTaste();
   try { navigator.storage?.persist?.(); } catch (e) { /* brak */ }
+  trackFilmwebChanges();
   mergeRatings();
   buildModel();
   render();
 }
 
+/* Historia zmian ocen: {id: [[ocena, data, źródło], ...]} – nic nie ginie przy zmianie */
+function histPush(id, r, date, src) {
+  const H = S.local.rhist = S.local.rhist || {}, h = H[id] = H[id] || [];
+  const last = h[h.length - 1];
+  if (last && last[0] === r) return;
+  h.push([r, date || today(), src]);
+}
+function trackFilmwebChanges() {   // oceny zmienione na Filmwebie od ostatniego otwarcia
+  const snap = S.local.fwSnap, now = {};
+  for (const r of S.me.ratings || []) if (r.id && r.r) now[r.id] = [r.r, r.date];
+  if (snap) for (const [id, [r, d]] of Object.entries(now)) {
+    const old = snap[id];
+    if (old != null && old !== r) { if (!(S.local.rhist || {})[id]) histPush(id, old, '', 'fw'); histPush(id, r, d || today(), 'fw'); }
+    else if (old == null && (S.local.rhist || {})[id]) histPush(id, r, d || today(), 'fw');
+  }
+  S.local.fwSnap = Object.fromEntries(Object.entries(now).map(([k, v]) => [k, v[0]]));
+  saveLocal();
+}
 function mergeRatings() {
   S.myRatings.clear();
   for (const r of S.me.ratings || []) if (r.id && r.r) S.myRatings.set(r.id, { r: r.r, date: r.date || '2000-01-01', src: 'fw', fav: r.fav });
@@ -457,6 +476,20 @@ function evaluate() {
     if (r && r.date && r.date >= d) live.push([p, r.r, { t: S.byId.get(id), r: r.r, date: r.date }]);
   }
   res.live = live.length ? metrics(live) : null; res.livePairs = live;
+  // czy z czasem trafia lepiej: uczenie na wszystkim sprzed okresu, test na ocenach z okresu
+  if (dated.length >= 60) {
+    const start = Math.floor(dated.length * .4), B = Math.min(6, Math.floor((dated.length - start) / 12)), size = Math.floor((dated.length - start) / B);
+    res.curve = [];
+    for (let b = 0; b < B; b++) {
+      const lo = start + b * size, hi = b === B - 1 ? dated.length : lo + size;
+      const trn = dated.slice(0, lo), test = dated.slice(lo, hi);
+      const m = train([...trn, ...weak]);
+      const cr = trn.filter(s => s.t.fr || s.t.ir), o = cr.reduce((a, s) => a + s.r - (s.t.fr || s.t.ir), 0) / Math.max(1, cr.length);
+      const mm = metrics(test.map(s => [m.predict(s.t).p, s.r]));
+      const cm = metrics(test.filter(s => s.t.fr || s.t.ir).map(s => [(s.t.fr || s.t.ir) + o, s.r]));
+      res.curve.push({ from: test[0].date, to: test.at(-1).date, n: lo, mae: mm.mae, crowd: cm?.mae, w1: mm.within1 });
+    }
+  }
   res.cvPairs = cvPairs; res.n = all.length;
   S.evalCache = res;
   return res;
@@ -641,11 +674,35 @@ function viewProfile() {
   if (P.cCrit != null && P.cAud != null) traits.push(P.cCrit > P.cAud + .05 ? 'Twoje oceny są bliżej krytyków niż publiczności – zwracasz uwagę na warsztat i oryginalność, nie tylko na emocje.' : P.cAud > P.cCrit + .05 ? 'Twoje oceny są bliżej publiczności niż krytyków – liczy się dla Ciebie przede wszystkim to, jak film działa na widza.' : 'Twoje oceny równie dobrze zgadzają się z krytykami, jak z publicznością.');
   traits.push(P.sd < 1.3 ? 'Oceniasz spokojnie i konsekwentnie – rzadko skrajnie.' : 'Mocno różnicujesz oceny – wiesz, co Cię zachwyca, a co nie.');
   if (P.lens.length > 20) { const m = P.lens.reduce((a, b) => a + b, 0) / P.lens.length; traits.push(m > 125 ? 'Nie boisz się długich filmów – cierpliwość do wolnego tempa to Twoja mocna strona.' : 'Wolisz zwarte historie – rzadko sięgasz po bardzo długie filmy.'); }
-  v.innerHTML = `
+  const part = S.profPart || 'portret';
+  const seg = `<div class="seg" style="margin:4px 0 14px">${[['portret', 'Portret'], ['gust', 'Mój gust'], ['hist', 'Moja historia']].map(([k, l]) => `<button data-prof="${k}" class="${part === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  if (part === 'gust') {
+    v.innerHTML = seg + declHTML() + `
+    <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
+    <div class="section-h">Tematy, do których wracasz</div>
+    <div class="f-chips">${topThemes.map(([f, n]) => `<span class="chip">${esc(THEME_NAMES[f.slice(1)] || f)} · ${n}</span>`).join('')}</div>
+    <div class="note" style="margin-top:18px">Poniżej: czego model nauczył się z Twoich ocen – niezależnie od reguł powyżej.</div>
+    ${tasteHTML('m', 'Filmy')}${tasteHTML('t', 'Seriale')}`;
+    return;
+  }
+  if (part === 'hist') {
+    v.innerHTML = seg + `
+    <div class="section-h">Twój kanon</div>
+    ${list(P.canon.map(x => x.t), 'mine')}
+    ${P.dirs.length ? `<div class="section-h">Twoi twórcy</div><table class="mini">${P.dirs.slice(0, 8).map(x => `<tr><td>${esc(x.d)}</td><td>${x.n} tyt.</td><td>śr. ${fmt(x.avg)}</td></tr>`).join('')}</table>` : ''}
+    ${(S.critics || []).length ? `<div class="section-h">Twoi krytycy</div><div class="note">Krytycy Filmwebu, których oceny są najbliższe Twoim (wspólne filmy · zgodność w granicy 1 pkt).</div>
+      <table class="mini">${S.critics.map((c, i) => `<tr><td><b>${i + 1}. ${esc(c.name)}</b><br><small style="color:var(--tx2)">${esc(c.pub || '')}</small></td><td>${c.n} wsp.</td><td>${Math.round(c.agree * 100)}%</td></tr>`).join('')}</table>` : ''}
+    <div class="section-h">Wbrew tłumowi – cenisz bardziej niż inni</div>
+    <table class="mini">${P.above.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="good">Ty ${x.r}</td></tr>`).join('')}</table>
+    <div class="section-h">Rozczarowania – cenisz mniej niż inni</div>
+    <table class="mini">${P.below.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="bad">Ty ${x.r}</td></tr>`).join('')}</table>
+    ${histHTML()}`;
+    return;
+  }
+  v.innerHTML = seg + `
   <div class="eyebrow" style="margin-top:6px">Portret widza · ${P.R.length} ocen</div>
   <p class="lead">${esc(arch.slice(0, 3).map((x, i) => i ? x[0].toLowerCase() : x[0]).join(arch.length > 2 ? ', ' : ' i ').replace(/, ([^,]*)$/, ' i $1'))}.</p>
   <div class="note">To interpretacja Twoich wyborów filmowych – nie test psychologiczny.</div>
-  <button class="quick" data-taste-open style="margin-top:12px"><i style="background:linear-gradient(135deg,#30d158,#0a84ff)">♥</i><div><b>Mój gust</b><span>${Object.values(S.local.taste || {}).filter(Boolean).length} reguł: kraje, gatunki, tematy, epoki – co lubisz, czego nie pokazywać</span></div></button>
   <div class="section-h">Twój typ widza</div>
   ${arch.slice(0, 3).map(([n, d]) => `<div class="arch"><b>${n}</b><span>${d}</span></div>`).join('')}
   <div class="section-h">Twoje osie</div>
@@ -659,18 +716,7 @@ function viewProfile() {
   <div class="section-h">Co mówią o Tobie Twoje wybory</div>
   <div class="arch"><ul class="reasons">${traits.map(t => `<li>${t}</li>`).join('')}</ul></div>
   ${drift.length ? `<div class="note">Zmiana w ostatnich 2 latach: ${drift.join('; ')}.</div>` : ''}
-  <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
-  <div class="section-h">Tematy, do których wracasz</div>
-  <div class="f-chips">${topThemes.map(([f, n]) => `<span class="chip">${esc(THEME_NAMES[f.slice(1)] || f)} · ${n}</span>`).join('')}</div>
-  ${(S.critics || []).length ? `<div class="section-h">Twoi krytycy</div><div class="note">Krytycy Filmwebu, których oceny są najbliższe Twoim (wspólne filmy · zgodność w granicy 1 pkt).</div>
-    <table class="mini">${S.critics.map((c, i) => `<tr><td><b>${i + 1}. ${esc(c.name)}</b><br><small style="color:var(--tx2)">${esc(c.pub || '')}</small></td><td>${c.n} wsp.</td><td>${Math.round(c.agree * 100)}%</td></tr>`).join('')}</table>` : ''}
-  ${P.dirs.length ? `<div class="section-h">Twoi twórcy</div><table class="mini">${P.dirs.slice(0, 8).map(x => `<tr><td>${esc(x.d)}</td><td>${x.n} tyt.</td><td>śr. ${fmt(x.avg)}</td></tr>`).join('')}</table>` : ''}
-  <div class="section-h">Twój kanon</div>
-  ${list(P.canon.map(x => x.t), 'mine')}
-  <div class="section-h">Wbrew tłumowi – cenisz bardziej niż inni</div>
-  <table class="mini">${P.above.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="good">Ty ${x.r}</td></tr>`).join('')}</table>
-  <div class="section-h">Rozczarowania – cenisz mniej niż inni</div>
-  <table class="mini">${P.below.map(x => `<tr><td>${esc(x.t.t)}</td><td>portale ${fmt(x.t.fr || x.t.ir)}</td><td class="bad">Ty ${x.r}</td></tr>`).join('')}</table>`;
+  <button class="quick" data-prof="gust" style="margin-top:14px"><i style="background:linear-gradient(135deg,#30d158,#0a84ff)">♥</i><div><b>Mój gust</b><span>${Object.values(S.local.taste || {}).filter(Boolean).length} reguł i to, czego model nauczył się z Twoich ocen</span></div></button>`;
 }
 
 /* ================================================================== NASTRÓJ: lekko ↔ ciężko */
@@ -1097,6 +1143,21 @@ function surpHTML() {
     <div class="note">Lepiej niż myślałeś: <b>${c(1)}</b> · gorzej: <b>${c(-1)}</b> · bez niespodzianek: <b>${c(0)}</b>.${sure.length ? ` Przy zaskoczeniach aplikacja przewidziała kierunek (wyżej/niżej niż ocena widzów) w <b>${pct(hit / sure.length)}</b> przypadków.` : ''} Zaskoczenia mają w nauce większą wagę – pokazują to, czego nie widać po gatunku i obsadzie.</div>
     <table class="mini">${rows.slice(-10).reverse().map(x => `<tr><td>${esc(x.t.t)}</td><td>${lab[x.v]}</td><td>${x.p != null ? 'prognoza ' + fmt(x.p) : ''}</td><td>Ty ${x.r}</td></tr>`).join('')}</table>`;
 }
+function curveHTML(C) {
+  const W = 340, H = 170, pl = 30, pr = 10, pt = 14, pb = 30;
+  const vals = C.flatMap(c => [c.mae, c.crowd].filter(x => x != null));
+  const lo = Math.floor(Math.min(...vals) * 4) / 4 - .1, hi = Math.ceil(Math.max(...vals) * 4) / 4 + .1;
+  const x = i => pl + i * (W - pl - pr) / (C.length - 1), y = v => pt + (v - lo) / (hi - lo) * (H - pt - pb);
+  const yy = v => H - pb - (y(v) - pt);
+  const line = (k, cls) => `<polyline class="${cls}" fill="none" points="${C.map((c, i) => c[k] != null ? `${x(i)},${yy(c[k])}` : '').filter(Boolean).join(' ')}"/>` + C.map((c, i) => c[k] != null ? `<circle class="${cls}" cx="${x(i)}" cy="${yy(c[k])}" r="3.5"/>` : '').join('');
+  const ticks = [lo + .1, (lo + hi) / 2, hi - .1].map(v => `<text x="${pl - 6}" y="${yy(v) + 4}" text-anchor="end">±${fmt(v, 1)}</text><line x1="${pl}" x2="${W - pr}" y1="${yy(v)}" y2="${yy(v)}" class="grid"/>`).join('');
+  const lab = C.map((c, i) => `<text x="${x(i)}" y="${H - 10}" text-anchor="middle">${c.to.slice(5, 7)}.${c.to.slice(2, 4)}</text>`).join('');
+  const first = C[0], last = C.at(-1), d = first.mae - last.mae;
+  return `<div class="section-h">Czy trafia coraz lepiej</div>
+  <svg class="curve" viewBox="0 0 ${W} ${H}" role="img" aria-label="Błąd prognoz w kolejnych okresach">${ticks}${line('crowd', 'c2')}${line('mae', 'c1')}${lab}</svg>
+  <div class="legend"><span><i class="c1"></i>Kinoteka</span><span><i class="c2"></i>sama ocena portali</span><small>niżej = mniejszy błąd</small></div>
+  <div class="note">Dla każdego okresu model uczy się tylko na ocenach sprzed niego i przewiduje te, które dałeś później. ${Math.abs(d) >= .05 ? (d > 0 ? `Błąd spadł z ±${fmt(first.mae, 2)} do <b class="good">±${fmt(last.mae, 2)}</b> – im więcej ocen, tym lepiej Cię zna.` : `Ostatnio błąd wzrósł (±${fmt(first.mae, 2)} → ±${fmt(last.mae, 2)}) – możliwe, że Twój gust się zmienia; nowe oceny szybko to wyrównają.`) : `Błąd jest stabilny (ok. ±${fmt(last.mae, 2)}).`}</div>`;
+}
 function viewStats() {
   const v = $('#view'), ev = evaluate();
   if (!ev) { v.innerHTML = `<div class="empty">Za mało ocen do oceny trafności (potrzeba 30).</div>` + declHTML() + settingsHTML(); return; }
@@ -1127,13 +1188,14 @@ function viewStats() {
     <div class="note">Model uczony tylko na ocenach sprzed ${ev.timeFrom} przewidział ${ev.time.n} najnowszych: średni błąd <b>±${fmt(ev.time.mae, 2)}</b>, ${pct(ev.time.within1)} w granicy 1 pkt.</div>
     <table class="mini">${ev.timePairs.slice(-10).reverse().map(([p, r, s]) => `<tr><td>${esc(s.t.t)}</td><td>prognoza ${fmt(p)}</td><td class="${Math.abs(p - r) <= 1 ? 'good' : 'bad'}">Ty ${r}</td></tr>`).join('')}</table>`;
   }
+  if (ev.curve && ev.curve.length >= 2) html += curveHTML(ev.curve);
   html += surpHTML();
   html += `<div class="section-h">Na żywo</div>`;
   html += ev.live ? `<div class="note">Przewidywania zapisane, zanim oceniłeś tytuł (${ev.live.n}): średni błąd <b>±${fmt(ev.live.mae, 2)}</b>.</div>
     <table class="mini">${ev.livePairs.slice(-15).reverse().map(([p, r, s]) => `<tr><td>${esc(s.t?.t)}</td><td>prognoza ${fmt(p)}</td><td class="${Math.abs(p - r) <= 1 ? 'good' : 'bad'}">Ty ${r}</td></tr>`).join('')}</table>`
     : `<div class="note">Aplikacja zapisała prognozy dla ${Object.keys(S.local.predlog).length.toLocaleString('pl')} tytułów. Gdy obejrzysz coś i ocenisz (na Filmwebie albo tutaj), pojawi się tu porównanie prognozy z Twoją oceną.</div>`;
-  html += tasteHTML('m', 'Filmy') + tasteHTML('t', 'Seriale');
-  html += declHTML() + settingsHTML();
+  html += `<div class="note" style="margin-top:18px">Twoje reguły i to, czego model nauczył się o Twoim guście, znajdziesz w Profil → Mój gust.</div>`;
+  html += settingsHTML();
   v.innerHTML = html;
 }
 
@@ -1166,6 +1228,19 @@ function settingsHTML() {
 }
 
 /* ------------------------------------------------------------------ szczegóły */
+const dpl = d => d ? d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(2, 4) : '';
+function histLine(id) {
+  const h = (S.local.rhist || {})[id];
+  if (!h || h.length < 2) return '';
+  return `<div class="note" style="margin:8px 0 0">Historia oceny: ${h.map(([r, d]) => `<b>${r}</b>${d ? ` <small>(${dpl(d)})</small>` : ''}`).join(' → ')}</div>`;
+}
+function histHTML() {
+  const rows = Object.entries(S.local.rhist || {}).filter(([id, h]) => h.length > 1 && S.byId.get(id))
+    .sort((a, b) => (b[1].at(-1)[1] || '').localeCompare(a[1].at(-1)[1] || ''));
+  return `<div class="section-h">Zmiany ocen</div>` + (rows.length
+    ? `<table class="mini">${rows.slice(0, 30).map(([id, h]) => { const a = h[0][0], b = h.at(-1)[0]; return `<tr class="row-link" data-id="${id}"><td>${esc(S.byId.get(id).t)}</td><td>${h.map(x => x[0]).join(' → ')}</td><td class="${b > a ? 'good' : 'bad'}">${b > a ? '▲' : '▼'} ${dpl(h.at(-1)[1])}</td></tr>`; }).join('')}</table>`
+    : `<div class="note">Gdy zmienisz ocenę (tutaj albo na Filmwebie), poprzednia zostanie zapisana i zobaczysz tu, jak zmieniało się Twoje zdanie.</div>`);
+}
 async function openDetail(id) {
   const t = S.byId.get(id); if (!t) return;
   if (!S.myRatings.has(id)) { S.local.opened = S.local.opened || {}; if (!S.local.opened[id]) { S.local.opened[id] = new Date().toISOString(); saveLocal(); } }
@@ -1199,6 +1274,7 @@ async function openDetail(id) {
   <div class="d-sec"><h3>${mine ? 'Zmień ocenę' : 'Obejrzałem – moja ocena'}</h3>
     <div class="stars">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button data-rate="${n}" class="${mine?.r === n ? 'on' : ''}">${n}</button>`).join('')}</div>
     ${mine ? `<div class="surp"><span>Lepiej czy gorzej, niż się spodziewałeś?</span><div class="seg">${[['-1', 'Gorzej'], ['0', 'Tak jak myślałem'], ['1', 'Lepiej']].map(([v, l]) => `<button data-surp="${v}" class="${String((S.local.surp || {})[id]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
+    ${histLine(id)}
     <div class="note" style="margin:6px 0 0">Ocena trafia do modelu od razu. Na Filmweb wystaw ją osobno – aplikacja nie może zapisywać na Twoim koncie.</div></div>
   <div class="btn-row">
     <button class="btn${S.want.has(id) ? ' on' : ''}" data-want>${S.want.has(id) ? '✓ Chcę zobaczyć' : '+ Chcę zobaczyć'}</button>
@@ -1506,15 +1582,19 @@ function restoreYesterday() {
 
 /* ------------------------------------------------------------------ zdarzenia */
 function setRating(id, r) {
+  const prev = S.myRatings.get(id);
+  if (prev && !(S.local.rhist || {})[id]) histPush(id, prev.r, prev.date, prev.src);
+  histPush(id, r, today(), 'app');
   S.local.ratings[id] = { r, date: today() };
   delete S.local.hidden[id];
   saveLocal(); mergeRatings(); buildModel();
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-prof],[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
+  if (el.dataset.prof) { S.profPart = el.dataset.prof; render(); window.scrollTo(0, 0); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
   if (el.dataset.tasteOpen != null) { openTaste(); return; }
   if (el.dataset.taste) { const [k, lv] = el.dataset.taste.split('|'); setTaste(k, lv); const y = $('#sheet .sheet-body').scrollTop; openTaste(); $('#sheet .sheet-body').scrollTop = y; return; }

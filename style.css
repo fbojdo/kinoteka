@@ -233,3 +233,14 @@ select,input{font-size:16px}
 .card.crit.on{outline:2px solid var(--tint)}
 .row-link{cursor:pointer}
 .row-link td:first-child{color:var(--tint)}
+
+.curve{width:100%;height:auto;display:block;margin-top:6px}
+.curve text{font:500 10px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;fill:var(--tx2)}
+.curve .grid{stroke:var(--sep,rgba(128,128,128,.2));stroke-width:1}
+.curve polyline{stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.curve .c1{stroke:#0a84ff;fill:#0a84ff}.curve polyline.c1{fill:none}
+.curve .c2{stroke:#8e8e93;fill:#8e8e93}.curve polyline.c2{fill:none;stroke-dasharray:5 4}
+.legend{display:flex;gap:14px;align-items:center;font-size:13px;color:var(--tx2);margin:6px 0 4px;flex-wrap:wrap}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.legend i.c1{background:#0a84ff}.legend i.c2{background:#8e8e93}
+.legend small{margin-left:auto}
