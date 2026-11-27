@@ -58,7 +58,9 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
     # 1) Twoje filmy: którzy krytycy je ocenili + ich oceny (najpierw filmy z wyrazistą oceną)
     mine = sorted(my_film_ratings, key=lambda f: -abs(my_film_ratings[f] - 7))
     film_critics(mine)
-    fetch_votes([f"{c}:{f}" for f in mine for c in C["film"].get(f, [])])
+    mine_pairs = [f"{c}:{f}" for f in mine for c in C["film"].get(f, [])]
+    if not C["votes"]:            # pierwszy przebieg – bez ocen nie da się dopasować krytyków
+        fetch_votes(mine_pairs)
 
     # 2) Podobieństwo: korelacja z ostrożnością przy małej liczbie wspólnych filmów
     mu = sum(my_film_ratings.values()) / max(1, len(my_film_ratings))
@@ -109,6 +111,7 @@ def run(fw_get, pmap, time_left, log, st, my_film_ratings, cand_fids, max_calls=
     fetch_votes(lp)
     log(f"Krytycy – listy: katalog fw {len(cat)}, list {len(lists)}, filmów na listach {sum(len(lists.get(c, {}).get('ids', [])) for c in top_ids)}, "
         f"w katalogu {len(lp)}, zapytań przed {c0}, po {calls[0]}, czas {time_left():.1f} min")
+    fetch_votes(mine_pairs)       # dalsze dopasowywanie krytyków – z budżetu, który został
     if top_ids:   # uzupełniająco: popularne filmy z katalogu, które krytycy ocenili
         film_critics(cand_fids[:600])
         fetch_votes([f"{c}:{f}" for f in cand_fids[:600] for c in C["film"].get(f, []) if c in top_ids])
