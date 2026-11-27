@@ -1094,7 +1094,8 @@ function viewBackup() {
   const n = Object.keys(S.local.ratings).length;
   $('#view').innerHTML = mineTabs('backup') + `<div class="section-h">Twoje dane w aplikacji</div>
     <div class="note">Oceny z Filmwebu są bezpieczne – aplikacja pobiera je sama 3 razy dziennie. Na tym urządzeniu przechowywane są tylko: ${n} ocen nadanych w aplikacji, „Chcę zobaczyć”, ukryte tytuły, pojedynki, reguły „Mój gust” i ustawienia.<br><br>
-    Uwaga: aplikacja z ekranu głównego iPhone’a i Safari mają <b>osobne</b> pamięci. Kopia pozwala przenieść dane między nimi albo na nowy telefon.</div>
+    Uwaga: aplikacja z ekranu głównego iPhone’a i Safari mają <b>osobne</b> pamięci. Kopia pozwala przenieść dane między nimi albo na nowy telefon. Wczytanie kopii <b>łączy</b> dane – niczego nie usuwa.</div>
+    ${IN_SAFARI ? `<div class="note"><b>Jesteś teraz w Safari</b> (${n} ocen z aplikacji). Zapisz tu kopię, potem otwórz Kinotekę z ikony → Moje → Kopia → Wczytaj kopię.</div>` : ''}
     <div class="btn-row"><button class="btn gold" data-bak="export">Zapisz kopię (Pliki / iCloud)</button></div>
     <div class="btn-row" style="margin-top:8px"><label class="btn" style="text-align:center">Wczytaj kopię z pliku<input type="file" accept="application/json,.json" data-bak-file hidden></label></div>
     <div class="note" style="margin-top:14px">Automatyczna kopia dzienna: ${b.prevDay ? `stan z ${b.prevDay} – <button class="linkbtn" data-bak="restore">przywróć</button>` : 'pojawi się jutro'}.</div>`;
@@ -1103,7 +1104,7 @@ function viewMine() {
   const sub = S.mineTab || 'rated';
   if (sub === 'critics') { viewMyCritics(); return; }
   if (sub === 'backup') { viewBackup(); return; }
-  let items, html = mineTabs(sub);
+  let items, html = safariNote() + mineTabs(sub);
   html += (sub === 'rated' || sub === 'want') ? mineControls(sub) : '';
   if (false) html = `<div class="chips" style="padding:0 0 10px">${[['rated', 'Ocenione'], ['want', 'Chcę zobaczyć'], ['hidden', 'Ukryte'], ['unmatched', 'Niedopasowane']]
     .map(([k, l]) => `<button class="chip${sub === k ? ' on' : ''}" data-mine="${k}">${l}</button>`).join('')}</div>`;
@@ -1274,7 +1275,7 @@ async function openDetail(id) {
   <div class="d-sec"><h3>${mine ? 'Zmień ocenę' : 'Obejrzałem – moja ocena'}</h3>
     <div class="stars">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button data-rate="${n}" class="${mine?.r === n ? 'on' : ''}">${n}</button>`).join('')}</div>
     ${mine ? `<div class="surp"><span>Lepiej czy gorzej, niż się spodziewałeś?</span><div class="seg">${[['-1', 'Gorzej'], ['0', 'Tak jak myślałem'], ['1', 'Lepiej']].map(([v, l]) => `<button data-surp="${v}" class="${String((S.local.surp || {})[id]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
-    ${histLine(id)}
+    ${histLine(id)}${safariNote()}
     <div class="note" style="margin:6px 0 0">Ocena trafia do modelu od razu. Na Filmweb wystaw ją osobno – aplikacja nie może zapisywać na Twoim koncie.</div></div>
   <div class="btn-row">
     <button class="btn${S.want.has(id) ? ' on' : ''}" data-want>${S.want.has(id) ? '✓ Chcę zobaczyć' : '+ Chcę zobaczyć'}</button>
@@ -1558,15 +1559,35 @@ function exportBackup() {
   if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Kinoteka – kopia' }).catch(() => {}); return; }
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; a.click();
 }
+/* Łączy dwie wersje danych (np. Safari + ikona na ekranie głównym) – nic nie ginie */
+function mergeLocal(cur, L) {
+  const out = JSON.parse(JSON.stringify(cur));
+  const R = out.ratings = out.ratings || {};
+  for (const [id, r] of Object.entries(L.ratings || {})) if (!R[id] || (r.date || '') > (R[id].date || '')) R[id] = r;
+  const H = out.rhist = out.rhist || {};
+  for (const [id, h] of Object.entries(L.rhist || {})) {
+    const seen = new Set((H[id] || []).map(x => x.join('|')));
+    H[id] = [...(H[id] || []), ...h.filter(x => !seen.has(x.join('|')))].sort((a, b) => (a[1] || '').localeCompare(b[1] || ''));
+  }
+  for (const [k, v] of Object.entries(L)) {
+    if (k === 'ratings' || k === 'rhist' || k === 'filters' || k === 'tune') continue;
+    if (Array.isArray(v)) out[k] = [...new Set([...(out[k] || []), ...v])];
+    else if (v && typeof v === 'object') out[k] = Object.assign({}, v, out[k] || {});
+    else if (out[k] == null) out[k] = v;
+  }
+  return out;
+}
+const IN_SAFARI = /iPhone|iPad|iPod/.test(navigator.userAgent) && !(navigator.standalone || matchMedia('(display-mode: standalone)').matches);
+const safariNote = () => IN_SAFARI ? `<div class="warn">Otwarte w Safari – oceny zapisane tutaj <b>nie trafią</b> do Kinoteki z ikony na ekranie głównym (iPhone trzyma ich dane osobno). Oceniaj w aplikacji z ikony albo przenieś dane: Moje → Kopia.</div>` : '';
 function importBackup(file) {
   const rd = new FileReader();
   rd.onload = () => {
     try {
       const j = JSON.parse(rd.result); const L = j.local || j;
       if (!L || typeof L !== 'object' || !('ratings' in L)) throw new Error('format');
-      const n = Object.keys(L.ratings || {}).length;
-      if (!confirm(`Wczytać kopię z ${String(j.date || '').slice(0, 10) || 'pliku'}? (${n} ocen z aplikacji). Obecne dane aplikacji zostaną zastąpione.`)) return;
-      localStorage.setItem(LS_KEY, JSON.stringify(L)); location.reload();
+      const cur = S.local, newR = Object.keys(L.ratings || {}).filter(id => !cur.ratings[id] || (L.ratings[id].date || '') > (cur.ratings[id].date || '')).length;
+      if (!confirm(`Połączyć kopię z ${String(j.date || '').slice(0, 10) || 'pliku'} z danymi w aplikacji?\n\nNowe lub nowsze oceny: ${newR}. Nic z obecnych danych nie zostanie usunięte.`)) return;
+      localStorage.setItem(LS_KEY, JSON.stringify(mergeLocal(cur, L))); location.reload();
     } catch (e) { alert('To nie jest plik kopii Kinoteki.'); }
   };
   rd.readAsText(file);

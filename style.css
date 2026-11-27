@@ -244,3 +244,5 @@ select,input{font-size:16px}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .legend i.c1{background:#0a84ff}.legend i.c2{background:#8e8e93}
 .legend small{margin-left:auto}
+
+.warn{background:rgba(255,159,10,.14);color:var(--tx);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.4;margin:0 0 12px}
