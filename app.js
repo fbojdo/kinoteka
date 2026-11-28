@@ -118,6 +118,7 @@ function mergeRatings() {
     const cur = S.myRatings.get(id);
     if (!cur || (r.date || '') >= (cur.date || '')) S.myRatings.set(id, { r: r.r, date: r.date, src: 'app' });
   }
+  applyFwImport();
   S.want = new Set([...(S.me.want || []).filter(w => w.id).map(w => w.id), ...Object.keys(S.local.want).filter(k => S.local.want[k])]);
   for (const k of Object.keys(S.local.want)) if (S.local.want[k] === false) S.want.delete(k);
 }
@@ -277,7 +278,8 @@ function train(samples, opt = {}) {
   samples.forEach((s, i) => {
     const ty = typ(s.t);
     for (const f of feats(s.t)) {
-      add(f, e[i] * W[i], W[i]); add(ty + '|' + f, e[i] * W[i], W[i]);
+      const wf = s.ag ? (s.ag.has(f[0]) ? 2.2 : .7) : 1;   // „Co zdecydowało?” – wskazane grupy cech uczą mocniej
+      add(f, e[i] * W[i] * wf, W[i] * wf); add(ty + '|' + f, e[i] * W[i] * wf, W[i] * wf);
       if (s.real !== false) { let p = post.get(f); if (!p) post.set(f, p = []); p.push(i); }
     }
   });
@@ -363,12 +365,75 @@ function recencyW(date) {
 }
 
 /** Prawdziwe oceny (opcjonalnie tylko sprzed daty) */
+/* „Więcej takich jak…” – podobieństwo do 1–3 wzorców (cechy ważone + ton + epoka), z domieszką dopasowania do Ciebie */
+function simTo(a, t) {
+  const fa = new Set(feats(a)); let o = 0;
+  for (const f of feats(t)) if (fa.has(f)) o += SIMW[f[0]] || 1;
+  const same = typ(a) === typ(t) ? SIMW.t : 0;
+  const jac = (o + same) / (a._fn + t._fn - o - same);
+  const tone = 1 - Math.abs(heaviness(a) - heaviness(t)) / 2;
+  const era = a.y && t.y ? Math.max(0, 1 - Math.abs(a.y - t.y) / 40) : .5;
+  return jac * .7 + tone * .2 + era * .1;
+}
+function likeResults(ids) {
+  const A = ids.map(i => S.byId.get(i)).filter(Boolean); if (!A.length) return [];
+  const out = [];
+  for (const t of S.cat) {
+    if (ids.includes(t.id) || S.myRatings.has(t.id) || S.local.hidden[t.id] || tasteBlocked(t)) continue;
+    const sims = A.map(a => simTo(a, t)), sim = sims.reduce((x, y) => x + y, 0) / sims.length * .6 + Math.min(...sims) * .4;
+    if (sim < .12) continue;
+    const p = S.preds.get(t.id) ?? 6.5;
+    out.push([sim * 10 + (p - 7) * .45 - famPenalty(t) * .5, sim, t]);
+  }
+  out.sort((a, b) => b[0] - a[0]);
+  const top = out.slice(0, 40), mx = top[0]?.[1] || 1;
+  return top.map(([, sim, t]) => (t._like = Math.round(sim / mx * 100), t));
+}
+function openLike(addId) {
+  S.like = S.like || [];
+  if (addId && !S.like.includes(addId)) { S.like.push(addId); if (S.like.length > 3) S.like.shift(); }
+  renderLike();
+}
+function renderLike() {
+  const body = $('#sheet .sheet-body'); body.dataset.id = '';
+  const q = (S.likeQ || '').toLowerCase();
+  const sugg = q.length >= 2 ? search(q).slice(0, 8) : [...S.myRatings.entries()].filter(([, r]) => r.r >= 9).map(([id]) => S.byId.get(id)).filter(Boolean).slice(0, 8);
+  const res = likeResults(S.like);
+  body.innerHTML = `<div class="grab"></div><button class="x" data-close aria-label="Zamknij">✕</button>
+  <h2 style="font:700 28px var(--sfd);margin:4px 0 6px">Więcej takich jak…</h2>
+  <div class="note">Wybierz od 1 do 3 tytułów-wzorców. Szukam podobnych tonem, tematem, twórcami i stylem – i dopasowanych do Ciebie.</div>
+  <div class="f-chips" style="margin:10px 0">${S.like.map(id => `<button class="chip on" data-likex="${id}">${esc(S.byId.get(id)?.t || id)} ✕</button>`).join('') || '<span class="note" style="margin:0">Brak wzorców</span>'}</div>
+  <input id="likeq" class="search" type="search" placeholder="Szukaj tytułu-wzorca…" value="${esc(S.likeQ || '')}" autocomplete="off">
+  <div class="f-chips" style="margin:8px 0 4px">${sugg.filter(t => !S.like.includes(t.id)).map(t => `<button class="chip" data-likeadd="${t.id}">+ ${esc(t.t)}${t.y ? ` <small>${t.y}</small>` : ''}</button>`).join('')}</div>
+  ${q.length < 2 ? '<div class="note" style="margin:0 0 6px">Podpowiedzi: Twoje filmy na 9–10.</div>' : ''}
+  ${res.length ? `<div class="section-h">Podobne · ${res.length}</div>${list(res, 'like')}` : ''}`;
+  $('#sheet').hidden = false;
+}
+
+/* Co zdecydowało o ocenie → które grupy cech mają się z tej oceny uczyć mocniej */
+const ASPECTS = {
+  temat: ['Temat', ['h', 'k']], fabula: ['Scenariusz i fabuła', ['w', 'k']], rezyseria: ['Reżyseria', ['d']],
+  aktorzy: ['Aktorstwo', ['a']], klimat: ['Klimat i zdjęcia', ['c', 'r', 'l', 'y']], gatunek: ['Gatunek', ['g']],
+  tempo: ['Tempo', ['g', 'y']], zakonczenie: ['Zakończenie', ['w', 'd']],
+};
+function aspectsHTML(id) {
+  const mine = S.myRatings.get(id); if (!mine) return '';
+  const cur = new Set((S.local.aspects || {})[id] || []), good = mine.r >= (S.mu || 7);
+  return `<div class="surp"><span>${good ? 'Co zdecydowało, że Ci się podobał?' : 'Co zawiodło?'} <small>(możesz kilka)</small></span>
+    <div class="f-chips">${Object.entries(ASPECTS).map(([k, [l]]) => `<button class="chip${cur.has(k) ? ' on' : ''}" data-asp="${k}">${l}</button>`).join('')}</div></div>`;
+}
+function aspectStats() {
+  const c = {}, A = S.local.aspects || {};
+  for (const [id, as] of Object.entries(A)) { const r = S.myRatings.get(id); if (!r) continue; for (const a of as) { c[a] = c[a] || [0, 0]; c[a][r.r >= (S.mu || 7) ? 0 : 1]++; } }
+  return Object.entries(c).sort((a, b) => b[1][0] + b[1][1] - a[1][0] - a[1][1]);
+}
 function trainingSamples(beforeDate) {
   const out = [], adj = duelAdjust();
   for (const [id, r] of S.myRatings) {
     const t = S.byId.get(id);
     const sp = (S.local.surp || {})[id];   // zaskoczenie po seansie: tytuł mówi o guście więcej, niż widać po etykietach
-    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r + (adj[id] || 0), date: r.date, id, w: recencyW(r.date) * (sp ? 1.4 : sp === 0 ? 1.05 : 1) });
+    const as = (S.local.aspects || {})[id], ag = as && as.length ? new Set(as.flatMap(a => ASPECTS[a]?.[1] || [])) : null;
+    if (t && (!beforeDate || (r.date || '') < beforeDate)) out.push({ t, r: r.r + (adj[id] || 0), date: r.date, id, ag, w: recencyW(r.date) * (sp ? 1.4 : sp === 0 ? 1.05 : 1) * (ag ? 1.15 : 1) });
   }
   return out;
 }
@@ -684,7 +749,9 @@ function viewProfile() {
   const part = S.profPart || 'portret';
   const seg = `<div class="seg" style="margin:4px 0 14px">${[['portret', 'Portret'], ['gust', 'Mój gust'], ['hist', 'Moja historia']].map(([k, l]) => `<button data-prof="${k}" class="${part === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   if (part === 'gust') {
-    v.innerHTML = seg + declHTML() + `
+    const asp = aspectStats();
+    v.innerHTML = seg + declHTML() + (asp.length ? `<div class="section-h">Co decyduje o Twoich ocenach</div>
+    <table class="mini">${asp.map(([k, [g, b]]) => `<tr><td>${ASPECTS[k][0]}</td><td class="good">${g ? '▲ ' + g : ''}</td><td class="bad">${b ? '▼ ' + b : ''}</td></tr>`).join('')}</table>` : '') + `
     <div class="section-h">Skąd jest kino, które oglądasz</div><div class="note">${esc(regList)}</div>
     <div class="section-h">Tematy, do których wracasz</div>
     <div class="f-chips">${topThemes.map(([f, n]) => `<span class="chip">${esc(THEME_NAMES[f.slice(1)] || f)} · ${n}</span>`).join('')}</div>
@@ -1020,6 +1087,7 @@ function viewRec() {
     const rem = reminders();
     if (rem.length) html += `<div class="section-h">Obejrzałeś?</div><div class="list">${rem.map(t => `<div class="card"><div class="poster" ${t.p ? `style="background-image:url('${IMG}w185${t.p}')"` : ''}></div><div class="info"><div class="ttl">${esc(t.t)}</div><div class="sub">Oglądałeś szczegóły niedawno – oceń, a model się poprawi</div><div class="btn-row" style="margin-top:6px"><button class="btn gold" data-remind="${t.id}" style="min-width:0;padding:8px">Oceń</button><button class="btn" data-remindx="${t.id}" style="min-width:0;padding:8px">Nie oglądałem</button></div></div></div>`).join('')}</div>`;
     html += `<button class="quick" data-quick><i>⚡︎</i><div><b>Szybkie dopasowanie</b><span>10 pytań, które najbardziej wyostrzą rekomendacje</span></div></button>`;
+    html += `<button class="quick" data-like-open style="margin-top:8px"><i style="background:linear-gradient(135deg,#30d158,#64d2ff)">≈</i><div><b>Więcej takich jak…</b><span>Wybierz 1–3 ulubione filmy – znajdę podobne w tonie i stylu</span></div></button>`;
     html += `<button class="quick" data-duelskip style="margin-top:8px"><i style="background:linear-gradient(135deg,#ff9f0a,#ff375f)">⚔︎</i><div><b>Pojedynki</b><span>Który z dwóch filmów był lepszy? Rozróżnia tytuły o tej samej ocenie</span></div></button>`;
     const mineSubs = S.local.subs.length ? items.filter(t => S.local.subs.some(p => (t.pv || {})[p] && 'sfa'.includes(t.pv[p]))) : [];
     html += shelf('Na Twoich serwisach', pick(mineSubs, 12));
@@ -1105,6 +1173,7 @@ function viewBackup() {
     ${IN_SAFARI ? `<div class="note"><b>Jesteś teraz w Safari</b> (${n} ocen z aplikacji). Zapisz tu kopię, potem otwórz Kinotekę z ikony → Moje → Kopia → Wczytaj kopię.</div>` : ''}
     <div class="btn-row"><button class="btn gold" data-bak="export">Zapisz kopię (Pliki / iCloud)</button></div>
     <div class="btn-row" style="margin-top:8px"><label class="btn" style="text-align:center">Wczytaj kopię z pliku<input type="file" accept="application/json,.json" data-bak-file hidden></label></div>
+    ${fwImportHTML()}
     <div class="note" style="margin-top:14px">Automatyczna kopia dzienna: ${b.prevDay ? `stan z ${b.prevDay} – <button class="linkbtn" data-bak="restore">przywróć</button>` : 'pojawi się jutro'}.</div>`;
 }
 function viewMine() {
@@ -1282,12 +1351,14 @@ async function openDetail(id) {
   <div class="d-sec"><h3>${mine ? 'Zmień ocenę' : 'Obejrzałem – moja ocena'}</h3>
     <div class="stars">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button data-rate="${n}" class="${mine?.r === n ? 'on' : ''}">${n}</button>`).join('')}</div>
     ${mine ? `<div class="surp"><span>Lepiej czy gorzej, niż się spodziewałeś?</span><div class="seg">${[['-1', 'Gorzej'], ['0', 'Tak jak myślałem'], ['1', 'Lepiej']].map(([v, l]) => `<button data-surp="${v}" class="${String((S.local.surp || {})[id]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>` : ''}
+    ${aspectsHTML(id)}
     ${histLine(id)}${safariNote()}
     <div class="note" style="margin:6px 0 0">Ocena trafia do modelu od razu. Na Filmweb wystaw ją osobno – aplikacja nie może zapisywać na Twoim koncie.</div></div>
   <div class="btn-row">
     <button class="btn${S.want.has(id) ? ' on' : ''}" data-want>${S.want.has(id) ? '✓ Chcę zobaczyć' : '+ Chcę zobaczyć'}</button>
     <button class="btn" data-hide>${S.local.hidden[id] ? 'Przywróć' : 'Nie dla mnie'}</button>
   </div>
+  <div class="btn-row" style="margin-top:8px"><button class="btn" data-like-from="${id}">≈ Więcej takich jak ten</button></div>
   <div class="d-sec links">
     <a href="${t.fw ? `https://www.filmweb.pl/${t.id[0] === 't' ? 'serial' : 'film'}/x-${t.y || 0}-${t.fw}` : `https://www.filmweb.pl/search#/?query=${encodeURIComponent(t.ot || t.t)}`}" target="_blank" rel="noopener">Filmweb</a>
     ${t.imdb ? `<a href="https://www.imdb.com/title/${t.imdb}/" target="_blank" rel="noopener">IMDb</a>` : ''}
@@ -1586,11 +1657,44 @@ function mergeLocal(cur, L) {
 }
 const IN_SAFARI = /iPhone|iPad|iPod/.test(navigator.userAgent) && !(navigator.standalone || matchMedia('(display-mode: standalone)').matches);
 const safariNote = () => IN_SAFARI ? `<div class="warn">Otwarte w Safari – oceny zapisane tutaj <b>nie trafią</b> do Kinoteki z ikony na ekranie głównym (iPhone trzyma ich dane osobno). Oceniaj w aplikacji z ikony albo przenieś dane: Moje → Kopia.</div>` : '';
+/* Zakładka do Safari: uruchomiona na filmweb.pl (zalogowany) pobiera WSZYSTKIE Twoje oceny do pliku */
+const FW_BOOKMARKLET = "javascript:(async()=>{const U=" + (2570815) + ",B='/api/v1',out=[];const d=document.createElement('div');d.style.cssText='position:fixed;z-index:2147483647;top:12px;left:12px;right:12px;padding:16px;background:#111;color:#fff;font:15px -apple-system,sans-serif;border-radius:14px;box-shadow:0 8px 30px #0008';document.body.appendChild(d);const L=m=>d.firstChild?d.firstChild.textContent=m:d.append(m);if(!/filmweb\\.pl$/.test(location.hostname)){L('Otwórz filmweb.pl (zalogowany) i uruchom zakładkę jeszcze raz.');return}L('Kinoteka: pobieram listę ocen…');const J=async u=>{const r=await fetch(B+u,{credentials:'include',headers:{'x-locale':'pl_PL'}});if(!r.ok)throw r.status;return r.json()};for(const typ of['film','serial']){const ids=new Map();let tot=0;const P=[p=>'/users/'+U+'/votes/'+typ+(p>1?'?page='+p:''),p=>'/logged/votes/'+typ+'?page='+p,p=>'/logged/vote/'+typ+'?page='+p,p=>'/users/'+U+'/votes/'+typ+'?page='+p+'&size=100'];for(const pat of P){try{for(let p=1;p<80;p++){const j=await J(pat(p));const a=Array.isArray(j)?j:(j.votes||j.content||[]);tot=j.totalCount||tot;let n=0;for(const v of a){const id=(v.id&&v.id.id)||v.entity||v.entityId||(Array.isArray(v)?v[0]:null);if(id&&!ids.has(id)){ids.set(id,v.timestamp||v.date||(Array.isArray(v)?v[1]:null));n++}}L(typ+': znaleziono '+ids.size+(tot?' z '+tot:''));if(!n)break}}catch(e){}if(tot&&ids.size>=tot)break}const list=[...ids];let i=0,k=0;await Promise.all(Array.from({length:6},async()=>{while(i<list.length){const[id,ts]=list[i++];try{const v=await J('/users/'+U+'/votes/'+typ+'/'+id);if(v.rate)out.push({typ,fw:String(id),r:v.rate,ts:ts||v.timestamp||null,fav:!!(v.favorite||v.favourite)})}catch(e){}L(typ+': oceny '+(++k)+'/'+list.length)}}))}const nf=out.filter(x=>x.typ=='film').length,ns=out.length-nf,txt=JSON.stringify({kind:'filmweb-votes',user:U,date:new Date().toISOString(),votes:out});const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:'application/json'}));a.download='filmweb-oceny.json';a.textContent='Zapisz plik ('+nf+' filmów, '+ns+' seriali)';a.style.cssText='display:block;margin-top:12px;padding:12px;background:#0a84ff;color:#fff;border-radius:10px;text-align:center;font-weight:600;text-decoration:none';d.firstChild.textContent='Gotowe: '+out.length+' ocen.';d.appendChild(a);try{await navigator.clipboard.writeText(txt)}catch(e){}})();";
+function fwImportHTML() {
+  const n = (S.local.fwImport || []).length, used = S._fwUsed || 0;
+  return `<div class="section-h">Pełny import ocen z Filmwebu</div>
+  <div class="note">Bez logowania Filmweb oddaje tylko ~100 najnowszych ocen, a masz ich znacznie więcej. Ta zakładka pobierze wszystkie – na Twoim koncie, bez podawania mi hasła.</div>
+  <ol class="steps">
+    <li><button class="btn gold" data-fwbm style="min-width:0;padding:8px 12px">Skopiuj kod zakładki</button></li>
+    <li>W Safari dodaj dowolną stronę do Zakładek (□↑ → Dodaj zakładkę), nazwij ją „Kinoteka import”.</li>
+    <li>Zakładki → Edytuj → ta zakładka → w polu adresu usuń wszystko i wklej skopiowany kod.</li>
+    <li>Otwórz <b>filmweb.pl</b> w Safari, zaloguj się, potem stuknij pasek adresu → Zakładki → „Kinoteka import”.</li>
+    <li>Po chwili pojawi się „Zapisz plik” – zapisz w Plikach, potem tutaj: „Wczytaj kopię z pliku” i wybierz <b>filmweb-oceny.json</b>. Najlepiej wyślij mi go też w czacie – wtedy dopasuję wszystkie tytuły, także spoza katalogu.</li>
+  </ol>
+  ${n ? `<div class="note">Zaimportowano ${n} ocen z Filmwebu · w nauce: ${used}.</div>` : ''}`;
+}
+function applyFwImport() {   // oceny z pliku zakładki → oceny w modelu (dopasowanie po identyfikatorze Filmwebu)
+  const V = S.local.fwImport; S._fwUsed = 0; if (!V || !V.length) return;
+  if (!S._fwIdx) { S._fwIdx = new Map(); for (const t of S.cat) if (t.fw) S._fwIdx.set(typ(t) + t.fw, t.id); }
+  const have = new Set((S.me.ratings || []).map(r => (r.tv ? 't' : 'm') + r.fw));
+  for (const v of V) {
+    const k = (v.typ === 'serial' ? 't' : 'm') + v.fw, id = S._fwIdx.get(k);
+    if (!id || have.has(k) || S.myRatings.has(id)) continue;
+    S.myRatings.set(id, { r: v.r, date: v.ts ? new Date(v.ts).toISOString().slice(0, 10) : '2015-01-01', src: 'fw' }); S._fwUsed++;
+  }
+}
 function importBackup(file) {
   const rd = new FileReader();
   rd.onload = () => {
     try {
-      const j = JSON.parse(rd.result); const L = j.local || j;
+      const j = JSON.parse(rd.result);
+      if (j.kind === 'filmweb-votes') {
+        const old = new Set((S.local.fwImport || []).map(v => v.typ + v.fw));
+        S.local.fwImport = [...(S.local.fwImport || []).filter(v => !j.votes.some(w => w.typ === v.typ && w.fw === v.fw)), ...j.votes];
+        saveLocal(); mergeRatings(); buildModel(); render();
+        alert(`Wczytano ${j.votes.length} ocen z Filmwebu (nowych: ${j.votes.filter(v => !old.has(v.typ + v.fw)).length}). Do nauki weszło ${S._fwUsed}.${j.votes.length - S._fwUsed > 0 ? ` Pozostałych nie ma jeszcze w katalogu albo już je znam – wyślij mi ten plik w czacie, a dopasuję wszystkie.` : ''}`);
+        return;
+      }
+      const L = j.local || j;
       if (!L || typeof L !== 'object' || !('ratings' in L)) throw new Error('format');
       const cur = S.local, newR = Object.keys(L.ratings || {}).filter(id => !cur.ratings[id] || (L.ratings[id].date || '') > (cur.ratings[id].date || '')).length;
       if (!confirm(`Połączyć kopię z ${String(j.date || '').slice(0, 10) || 'pliku'} z danymi w aplikacji?\n\nNowe lub nowsze oceny: ${newR}. Nic z obecnych danych nie zostanie usunięte.`)) return;
@@ -1619,9 +1723,24 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-prof],[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-asp],[data-like-open],[data-like-from],[data-likeadd],[data-likex],[data-fwbm],[data-prof],[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
+  if (el.dataset.asp) {
+    const id = $('#sheet .sheet-body').dataset.id, A = S.local.aspects = S.local.aspects || {}, cur = new Set(A[id] || []);
+    cur.has(el.dataset.asp) ? cur.delete(el.dataset.asp) : cur.add(el.dataset.asp);
+    if (cur.size) A[id] = [...cur]; else delete A[id];
+    saveLocal(); el.classList.toggle('on'); clearTimeout(S._aspT); S._aspT = setTimeout(() => { buildModel(); }, 600); return;
+  }
+  if (el.dataset.likeOpen != null) { S.likeQ = ''; openLike(); return; }
+  if (el.dataset.likeFrom) { S.like = []; S.likeQ = ''; openLike(el.dataset.likeFrom); return; }
+  if (el.dataset.likeadd) { S.likeQ = ''; openLike(el.dataset.likeadd); return; }
+  if (el.dataset.likex) { S.like = (S.like || []).filter(x => x !== el.dataset.likex); renderLike(); return; }
+  if (el.dataset.fwbm != null) {
+    const done = () => { el.textContent = '✓ Skopiowano'; };
+    (navigator.clipboard?.writeText(FW_BOOKMARKLET) || Promise.reject()).then(done).catch(() => { prompt('Skopiuj ten kod:', FW_BOOKMARKLET); });
+    return;
+  }
   if (el.dataset.prof) { S.profPart = el.dataset.prof; render(); window.scrollTo(0, 0); return; }
   if (el.dataset.quick != null) { openQuick(); return; }
   if (el.dataset.tasteOpen != null) { openTaste(); return; }
@@ -1684,6 +1803,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   const el = e.target;
+  if (el.id === 'likeq') { S.likeQ = el.value; clearTimeout(S._lq); S._lq = setTimeout(() => { renderLike(); const i = $('#likeq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 250); return; }
   if (el.id === 'q') { S.q = el.value.trim(); S.limit = 40; clearTimeout(S._qt); S._qt = setTimeout(render, 180); return; }
   if (el.dataset.f === 'bsort') { S.local.bsort = el.value; saveLocal(); return; }
   if (el.dataset.f) {

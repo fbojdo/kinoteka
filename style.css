@@ -246,3 +246,7 @@ select,input{font-size:16px}
 .legend small{margin-left:auto}
 
 .warn{background:rgba(255,159,10,.14);color:var(--tx);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.4;margin:0 0 12px}
+
+.steps{margin:8px 0 6px 0;padding-left:22px;font-size:14px;line-height:1.45;color:var(--tx)}
+.steps li{margin:6px 0}
+input.search{width:100%;box-sizing:border-box;padding:11px 14px;border-radius:12px;border:0;background:var(--fill);color:var(--tx);font:16px var(--sf)}

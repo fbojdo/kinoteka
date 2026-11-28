@@ -436,6 +436,20 @@ def main():
     # 1. Filmweb – Twoje listy (publiczne API profilu)
     me = {"user": FW_USER, "ratings": [], "want": []}
     votes_cache = st.setdefault("fwvotes", {})   # "typ:id" -> {r, date, ts}
+    seed_fw = os.path.join(ROOT, "seed", "fw_votes.json")   # pełny eksport z zakładki „Kinoteka import”
+    if os.path.exists(seed_fw):
+        try:
+            with open(seed_fw, encoding="utf-8") as f:
+                added = 0
+                for v in json.load(f).get("votes", []):
+                    key = f"{v['typ']}:{v['fw']}"
+                    if v.get("r") and not (votes_cache.get(key) or {}).get("r"):
+                        votes_cache[key] = {"r": v["r"], "date": entry_date({"timestamp": v.get("ts")}) if v.get("ts") else None,
+                                            "ts": v.get("ts"), "fav": bool(v.get("fav"))}
+                        added += 1
+            log("Import z zakładki Filmweb – nowych ocen:", added)
+        except Exception as e:
+            log("Import z zakładki: błąd", e)
     fw_counts = {}
     for typ in ("film", "serial"):
         lst = fw_user_list("votes", typ)
