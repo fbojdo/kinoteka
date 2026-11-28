@@ -727,6 +727,75 @@ function axis(label, left, right, v) {   // v w [0,1]
   const p = Math.round(Math.max(0, Math.min(1, v)) * 100);
   return `<div class="axis"><div class="ax-l"><span>${left}</span><b>${label}</b><span>${right}</span></div><div class="ax-bar"><i style="left:${p}%"></i></div></div>`;
 }
+/* ================================================================== STATYSTYKI ocen */
+function statsHTML() {
+  const ty = S.statType || 'all';
+  const R = [...S.myRatings.entries()].map(([id, r]) => ({ t: S.byId.get(id), r: r.r, date: r.date })).filter(x => x.t && (ty === 'all' || typ(x.t) === ty));
+  const segT = `<div class="seg" style="margin:0 0 14px">${[['all', 'Wszystko'], ['m', 'Filmy'], ['t', 'Seriale']].map(([k, l]) => `<button data-stat="${k}" class="${ty === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  if (R.length < 5) return segT + `<div class="empty">Za mało ocen.</div>`;
+  const mean = a => a.reduce((x, y) => x + y, 0) / Math.max(1, a.length);
+  const rs = R.map(x => x.r).sort((a, b) => a - b), mu = mean(rs);
+  const med = rs.length % 2 ? rs[(rs.length - 1) / 2] : (rs[rs.length / 2 - 1] + rs[rs.length / 2]) / 2;
+  const sd = Math.sqrt(mean(rs.map(r => (r - mu) ** 2)));
+  const cr = R.filter(x => quality(x.t)), gen = mean(cr.map(x => x.r - quality(x.t)));
+  const sgn = x => (x > 0 ? '+' : x < 0 ? '−' : '±') + fmt(Math.abs(x));
+  const tile = (v, l) => `<div class="st-tile"><b>${v}</b><span>${l}</span></div>`;
+  const nm = R.filter(x => typ(x.t) === 'm').length, nt = R.length - nm;
+  // grupowanie: klucze → [liczba, średnia, różnica vs widzowie]
+  const group = (keysOf, min = 1) => {
+    const g = new Map();
+    for (const x of R) for (const k of keysOf(x)) { if (k == null || k === '') continue; const a = g.get(k) || g.set(k, []).get(k); a.push(x); }
+    return [...g].filter(([, a]) => a.length >= min).map(([k, a]) => {
+      const c = a.filter(x => quality(x.t));
+      return { k, n: a.length, avg: mean(a.map(x => x.r)), vs: c.length >= 2 ? mean(c.map(x => x.r - quality(x.t))) - gen : null };
+    });
+  };
+  // wiersze słupków: etykieta | słupek (liczba) | liczba · średnia | vs widzowie
+  const bars = (rows, label, opts = {}) => {
+    if (!rows.length) return '';
+    const mx = Math.max(...rows.map(r => r.n));
+    return `<div class="sbars">${rows.map(r => `<div class="sbar" title="${esc(label(r.k))}: ${r.n} ocen, średnia ${fmt(r.avg)}">
+      <span class="sl">${esc(label(r.k))}</span><span class="sb"><i style="width:${Math.max(4, r.n / mx * 100)}%"></i></span>
+      <span class="sn">${r.n}</span><span class="sa">${fmt(r.avg)}</span>${opts.vs ? `<span class="sv ${r.vs == null ? '' : r.vs > .15 ? 'good' : r.vs < -.15 ? 'bad' : ''}">${r.vs == null ? '' : sgn(r.vs)}</span>` : ''}</div>`).join('')}</div>`;
+  };
+  const head = (t, sub) => `<div class="section-h">${t}</div>${sub ? `<div class="note" style="margin-top:-4px">${sub}</div>` : ''}`;
+  const colhead = vs => `<div class="sbar shead"><span class="sl"></span><span class="sb"></span><span class="sn">ocen</span><span class="sa">śr.</span>${vs ? '<span class="sv">vs widzowie</span>' : ''}</div>`;
+  // rozkład 1–10
+  const dist = Array.from({ length: 10 }, (_, i) => rs.filter(r => r === i + 1).length), dmx = Math.max(...dist);
+  const distHTML = `<div class="sdist">${dist.map((n, i) => `<div title="${i + 1}: ${n} ocen"><span class="dn">${n || ''}</span><i style="height:${n ? Math.max(3, n / dmx * 100) : 0}%"></i><b>${i + 1}</b></div>`).join('')}</div>`;
+  const dec = group(x => [x.t.y ? Math.floor(x.t.y / 10) * 10 : null]).sort((a, b) => a.k - b.k);
+  const yrs = group(x => [x.t.y]).filter(r => r.k >= new Date().getFullYear() - 14).sort((a, b) => b.k - a.k);
+  const gen_ = group(x => (x.t.g || []).map(String), 3).sort((a, b) => b.n - a.n);
+  const reg = group(x => [regionOf(x.t)], 2).sort((a, b) => b.n - a.n);
+  const ctry = group(x => (x.t.c || []).slice(0, 1), 2).sort((a, b) => b.n - a.n).slice(0, 14);
+  const ry = group(x => [x.date && x.date > '2001' ? x.date.slice(0, 4) : null]).sort((a, b) => b.k.localeCompare(a.k));
+  const lenB = x => { const L = x.t.len; if (!L) return null; if (typ(x.t) === 't') return L <= 30 ? 'odcinek do 30 min' : L <= 55 ? 'odcinek 30–55 min' : 'odcinek ponad 55 min'; return L < 95 ? 'do 95 min' : L < 120 ? '95–120 min' : L < 150 ? '120–150 min' : 'ponad 150 min'; };
+  const lens = group(x => [lenB(x)]); const LO = ['do 95 min', '95–120 min', '120–150 min', 'ponad 150 min', 'odcinek do 30 min', 'odcinek 30–55 min', 'odcinek ponad 55 min']; lens.sort((a, b) => LO.indexOf(a.k) - LO.indexOf(b.k));
+  const dirs = group(x => x.t.d || [], 2).sort((a, b) => b.n - a.n || b.avg - a.avg).slice(0, 12);
+  const acts = group(x => (x.t.a || []).slice(0, 4), 3).sort((a, b) => b.n - a.n || b.avg - a.avg).slice(0, 12);
+  const aw = group(x => [(x.t.aw || []).length ? 'Nagrodzone' : (x.t.an || []).length ? 'Tylko nominowane' : 'Bez nagród']).sort((a, b) => b.avg - a.avg);
+  const pop = group(x => { const v = x.t.iv || (x.t.tv || 0) * 20; return [v >= 500000 ? 'hity (500 tys.+ głosów)' : v >= 100000 ? 'popularne (100–500 tys.)' : v >= 20000 ? 'średnio znane (20–100 tys.)' : 'niszowe (do 20 tys.)']; });
+  const POPO = ['hity (500 tys.+ głosów)', 'popularne (100–500 tys.)', 'średnio znane (20–100 tys.)', 'niszowe (do 20 tys.)']; pop.sort((a, b) => POPO.indexOf(a.k) - POPO.indexOf(b.k));
+  const best = R.slice().sort((a, b) => b.r - a.r || (quality(b.t) || 0) - (quality(a.t) || 0));
+  return segT + `<div class="st-tiles">
+    ${tile(R.length, ty === 'all' ? `ocen · ${nm} filmów, ${nt} seriali` : 'ocen')}${tile(fmt(mu, 2), 'średnia')}${tile(fmt(med), 'mediana')}
+    ${tile(Math.round(rs.filter(r => r >= 9).length / rs.length * 100) + '%', 'ocen 9–10')}${tile(sgn(gen), 'vs średnia portali')}${tile(fmt(sd, 2), 'rozrzut ocen')}</div>
+  ${head('Rozkład ocen')}${distHTML}
+  ${head('Dekady produkcji')}${colhead(true)}${bars(dec, k => k + '.', { vs: true })}
+  ${head('Roczniki – ostatnie 15 lat')}${colhead()}${bars(yrs, k => String(k))}
+  ${head('Gatunki', 'Min. 3 oceny · „vs widzowie” – o ile oceniasz wyżej/niżej niż portale, ponad swoją zwykłą różnicę.')}${colhead(true)}${bars(gen_, k => genreName(k) || k, { vs: true })}
+  ${head('Regiony')}${colhead(true)}${bars(reg, k => REGION_NAMES[k] || k, { vs: true })}
+  ${head('Kraje (główny kraj produkcji)')}${colhead(true)}${bars(ctry, k => COUNTRY[k] || k, { vs: true })}
+  ${head('Długość')}${colhead()}${bars(lens, k => k)}
+  ${head('Popularność tytułu')}${colhead(true)}${bars(pop, k => k, { vs: true })}
+  ${head('Nagrody')}${colhead(true)}${bars(aw, k => k, { vs: true })}
+  ${dirs.length ? head('Reżyserzy (min. 2 tytuły)') + colhead() + bars(dirs, k => k) : ''}
+  ${acts.length ? head('Aktorzy (min. 3 tytuły)') + colhead() + bars(acts, k => k) : ''}
+  ${head('Kiedy oceniałeś', 'Rok wystawienia oceny.')}${colhead()}${bars(ry, k => k)}
+  ${head('Najwyżej i najniżej')}
+  <table class="mini">${[...best.slice(0, 5), ...best.slice(-5)].map((x, i) => `${i === 5 ? '<tr><td colspan="3" style="color:var(--tx2)">…</td></tr>' : ''}<tr class="row-link" data-id="${x.t.id}"><td>${esc(x.t.t)} <small style="color:var(--tx2)">${x.t.y || ''}</small></td><td>portale ${fmt(quality(x.t))}</td><td><b>${x.r}</b></td></tr>`).join('')}</table>`;
+}
+
 function viewProfile() {
   const v = $('#view'), P = profileData();
   if (!P) { v.innerHTML = `<div class="empty">Profil powstanie, gdy będzie co najmniej 20 Twoich ocen dopasowanych do katalogu.</div>`; return; }
@@ -747,7 +816,8 @@ function viewProfile() {
   traits.push(P.sd < 1.3 ? 'Oceniasz spokojnie i konsekwentnie – rzadko skrajnie.' : 'Mocno różnicujesz oceny – wiesz, co Cię zachwyca, a co nie.');
   if (P.lens.length > 20) { const m = P.lens.reduce((a, b) => a + b, 0) / P.lens.length; traits.push(m > 125 ? 'Nie boisz się długich filmów – cierpliwość do wolnego tempa to Twoja mocna strona.' : 'Wolisz zwarte historie – rzadko sięgasz po bardzo długie filmy.'); }
   const part = S.profPart || 'portret';
-  const seg = `<div class="seg" style="margin:4px 0 14px">${[['portret', 'Portret'], ['gust', 'Mój gust'], ['hist', 'Moja historia']].map(([k, l]) => `<button data-prof="${k}" class="${part === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  if (part === 'stat') { v.innerHTML = `<div class="seg" style="margin:4px 0 14px">${[['portret', 'Portret'], ['gust', 'Mój gust'], ['hist', 'Historia'], ['stat', 'Statystyki']].map(([k, l]) => `<button data-prof="${k}" class="${part === k ? 'on' : ''}">${l}</button>`).join('')}</div>` + statsHTML(); return; }
+  const seg = `<div class="seg" style="margin:4px 0 14px">${[['portret', 'Portret'], ['gust', 'Mój gust'], ['hist', 'Historia'], ['stat', 'Statystyki']].map(([k, l]) => `<button data-prof="${k}" class="${part === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   if (part === 'gust') {
     const asp = aspectStats();
     v.innerHTML = seg + declHTML() + (asp.length ? `<div class="section-h">Co decyduje o Twoich ocenach</div>
@@ -1723,9 +1793,10 @@ function setRating(id, r) {
 }
 
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-asp],[data-like-open],[data-like-from],[data-likeadd],[data-likex],[data-fwbm],[data-prof],[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
+  const el = e.target.closest('[data-stat],[data-asp],[data-like-open],[data-like-from],[data-likeadd],[data-likex],[data-fwbm],[data-prof],[data-taste],[data-taste-open],[data-rrule],[data-crit],[data-bak],.row-link,[data-surp],[data-aw],[data-reason],[data-duel],[data-duelskip],[data-remind],[data-remindx],[data-fwdone],[data-reset-quick],[data-quick],[data-qrate],[data-qact],[data-decl],[data-declpart],[data-id],[data-tab],[data-chip],[data-more],[data-mine],[data-sub],[data-rate],[data-want],[data-hide],[data-set],[data-arr],[data-toggle],[data-reset],[data-close],.sheet-bg,#filterBtn');
   if (!el) return;
   if (el.classList.contains('sheet-bg') || el.dataset.close != null) { closeSheet(); render(); return; }
+  if (el.dataset.stat) { S.statType = el.dataset.stat; render(); return; }
   if (el.dataset.asp) {
     const id = $('#sheet .sheet-body').dataset.id, A = S.local.aspects = S.local.aspects || {}, cur = new Set(A[id] || []);
     cur.has(el.dataset.asp) ? cur.delete(el.dataset.asp) : cur.add(el.dataset.asp);

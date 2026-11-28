@@ -250,3 +250,27 @@ select,input{font-size:16px}
 .steps{margin:8px 0 6px 0;padding-left:22px;font-size:14px;line-height:1.45;color:var(--tx)}
 .steps li{margin:6px 0}
 input.search{width:100%;box-sizing:border-box;padding:11px 14px;border-radius:12px;border:0;background:var(--fill);color:var(--tx);font:16px var(--sf)}
+
+.st-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 6px}
+.st-tile{background:var(--bg2);border-radius:14px;padding:12px 10px}
+.st-tile b{display:block;font:700 22px var(--sfd);letter-spacing:-.3px}
+.st-tile span{display:block;font-size:12px;color:var(--tx2);margin-top:2px;line-height:1.25}
+.sdist{display:flex;align-items:flex-end;gap:6px;height:130px;background:var(--bg2);border-radius:14px;padding:12px 12px 8px}
+.sdist div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.sdist i{display:block;width:100%;background:var(--tint);border-radius:4px 4px 0 0;min-height:0}
+.sdist .dn{font-size:11px;color:var(--tx2);margin-bottom:3px}
+.sdist b{font-size:12px;font-weight:600;margin-top:4px;color:var(--tx)}
+.sbars{background:var(--bg2);border-radius:14px;padding:6px 12px}
+.sbar{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) 34px 34px;align-items:center;gap:8px;padding:6px 0;font-size:14px}
+.sbars .sbar:has(.sv),.shead:has(.sv){grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr) 30px 32px 40px}
+.sbar .sl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbar .sb{height:8px;background:var(--fill);border-radius:4px;overflow:hidden}
+.sbar .sb i{display:block;height:100%;background:var(--tint);border-radius:4px}
+.sbar .sn{text-align:right;color:var(--tx2);font-variant-numeric:tabular-nums}
+.sbar .sa{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.sbar .sv{text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:var(--tx2)}
+.sbar .sv.good{color:#248a3d}.sbar .sv.bad{color:#d70015}
+@media (prefers-color-scheme:dark){.sbar .sv.good{color:#30d158}.sbar .sv.bad{color:#ff6961}}
+.shead{padding:0 12px 2px;font-size:11px;color:var(--tx2);text-transform:uppercase;letter-spacing:.3px}
+.shead .sa,.shead .sv{font-weight:500;color:var(--tx2);font-size:11px}
+.shead .sb{background:none}
